@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.next/
+out/
+
+# Local runtime data stores (never commit — seeded from code, may hold PII/hashes)
+.pgdata/
+.data/
+
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.log
+.DS_Store
