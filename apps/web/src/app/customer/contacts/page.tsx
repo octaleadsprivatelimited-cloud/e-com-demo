@@ -480,7 +480,7 @@ export default function CustomerContacts() {
         </div>
 
         {/* Right Column: Database Table */}
-        <div className="lg:col-span-8">
+        <div className="lg:col-span-8 min-w-0">
           <Card className="glass-card">
             <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-3">
               <div>

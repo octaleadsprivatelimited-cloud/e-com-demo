@@ -223,7 +223,7 @@ export default function ManifestoPdfEditor() {
 
       <div className="grid gap-6 lg:grid-cols-12">
         {/* Left Form Controls */}
-        <div className="lg:col-span-5 space-y-6">
+        <div className="lg:col-span-5 min-w-0 space-y-6">
   <Card className="glass-card shadow-md">
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
@@ -410,7 +410,7 @@ export default function ManifestoPdfEditor() {
                 <div className="space-y-1.5">
                   {settings.promises.map((promise, index) => (
                     <div key={index} className="flex items-center justify-between gap-2 bg-muted/40 p-2 rounded text-[11px] border border-border/30">
-                      <span className="truncate flex-1">{promise}</span>
+                      <span className="truncate flex-1 min-w-0">{promise}</span>
                       <Button type="button" size="icon" variant="ghost" className="h-6 w-6 text-destructive hover:bg-destructive/10" onClick={() => removePromise(index)}>
                         <Trash2 className="h-3 w-3" />
                       </Button>
@@ -480,10 +480,10 @@ export default function ManifestoPdfEditor() {
         </div>
 
         {/* Right column: Simulated A4 Page Display */}
-        <div className="lg:col-span-7 flex flex-col space-y-4">
-          <div className="flex justify-between items-center">
-            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">A4 Electoral Manifesto Preview</span>
-            <Button variant="outline" size="sm" onClick={handlePrint} className="h-8 font-mono text-[10px] uppercase border-[#e2e8f0] dark:border-[#333]">
+        <div className="lg:col-span-7 min-w-0 flex flex-col space-y-4">
+          <div className="flex justify-between items-center gap-2">
+            <span className="min-w-0 truncate text-xs font-semibold text-muted-foreground uppercase tracking-wider">A4 Electoral Manifesto Preview</span>
+            <Button variant="outline" size="sm" onClick={handlePrint} className="shrink-0 h-8 font-mono text-[10px] uppercase border-[#e2e8f0] dark:border-[#333]">
               <Printer className="h-3.5 w-3.5 mr-1" /> Export as PDF
             </Button>
           </div>
