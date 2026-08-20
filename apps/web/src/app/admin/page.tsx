@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/table";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 import { candidatesApi } from "@/lib/api";
+import { AdminOverview } from "@/components/admin/AdminOverview";
 
 type Candidate = {
   id: string;
@@ -301,6 +302,32 @@ export default function AdminCRM() {
   const pendingApprovals = candidates.filter(c => c.status === "Pending Verification");
   const activeCount = candidates.filter(c => c.status === "Active").length;
   const totalReach = candidates.reduce((acc, c) => acc + c.contacts, 0);
+
+  return (
+    <AdminOverview
+      candidates={candidates}
+      activeCount={activeCount}
+      totalReach={totalReach}
+      pendingDlt={dltTemplates.filter((template) => template.status === "Pending").length}
+      pendingApprovals={pendingApprovals}
+      gatewayStatus={gatewayStatus}
+      selectedCandId={selectedCandId}
+      creditType={creditType}
+      creditAmount={creditAmount}
+      creditAction={creditAction}
+      isDisbursing={isDisbursing}
+      onSelectedCandidate={setSelectedCandId}
+      onCreditType={setCreditType}
+      onCreditAmount={setCreditAmount}
+      onCreditAction={setCreditAction}
+      onCreditSubmit={handleDisburseCredits}
+      onCandidateStatus={handleUpdateStatus}
+      onGatewayTest={testGateway}
+    />
+  );
+
+  /* Legacy dashboard markup retained temporarily below for reference during migration. */
+  /* eslint-disable no-unreachable */
 
   return (
     <div className="space-y-6 p-4 sm:p-8 pt-6 max-w-7xl mx-auto">

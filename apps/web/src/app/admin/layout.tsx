@@ -224,7 +224,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       </div>
 
       {/* Main content wrapper */}
-      <div className="flex w-full flex-col sm:pl-64">
+      <div className="flex w-full flex-col sm:pl-[252px]">
         {/* Pass toggle function to Header */}
         <Header onMenuToggle={() => setSidebarOpen(true)} />
         <main className="flex-1">

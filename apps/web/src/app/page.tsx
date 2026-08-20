@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { 
   ShieldCheck, 
   CheckCircle2, 
@@ -19,8 +20,18 @@ import {
   Globe,
   Radio,
   FileSpreadsheet,
-  Check
+  Check,
+  LayoutGrid,
+  ChevronDown,
+  Megaphone,
+  Users,
+  Workflow,
+  ClipboardList,
+  Settings,
+  BarChart3,
+  CreditCard
 } from "lucide-react";
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, PieChart, Pie, Cell } from "recharts";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -64,6 +75,19 @@ interface PostOfficeOffice {
   District?: string;
   State?: string;
 }
+
+const deliverySeries = [
+  { time: "00:00", messages: 3800 }, { time: "04:00", messages: 6900 },
+  { time: "08:00", messages: 12100 }, { time: "12:00", messages: 10800 },
+  { time: "16:00", messages: 14200 }, { time: "20:00", messages: 10300 },
+  { time: "24:00", messages: 5200 },
+];
+
+const channelMix = [
+  { name: "SMS", value: 60.2, color: "#2563eb" },
+  { name: "WhatsApp", value: 32.7, color: "#16a05d" },
+  { name: "IVR", value: 7.1, color: "#e88a1a" },
+];
 
 export default function RootAuthPage() {
   const router = useRouter();
@@ -117,6 +141,7 @@ export default function RootAuthPage() {
   const [isSendingOtp, setIsSendingOtp] = useState(false);
   const [termsOpen, setTermsOpen] = useState(false);
   const [regConsent, setRegConsent] = useState(false);
+  const [portalOpen, setPortalOpen] = useState(false);
 
   // Version of the legal policies the user is accepting at registration.
   const POLICY_VERSION = "2026-07-13";
@@ -447,70 +472,71 @@ export default function RootAuthPage() {
   };
 
   return (
-    <div className="min-h-screen mesh-bg text-[#1e293b] dark:text-[#f1f5f9] font-sans flex flex-col transition-colors duration-500">
+    <div className="min-h-screen bg-white text-[#07142f] font-sans flex flex-col">
       
-      {/* Premium Glassmorphic Navigation Header */}
-      <header className="glass border-b border-[#e2e8f0]/30 dark:border-zinc-800/40 sticky top-0 z-45 select-none h-14 flex items-center px-6 transition-all duration-300">
-        <div className="flex items-center justify-between w-full max-w-[1280px] mx-auto">
-          <div className="flex items-center gap-6">
-            {/* Logo */}
-            <div className="flex items-center gap-2 group cursor-pointer">
-              <div className="h-6 w-6 bg-[#2563eb] flex items-center justify-center rounded-sm shrink-0 shadow-sm transition-transform duration-300 group-hover:scale-110">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                  <rect x="1" y="1" width="6" height="6" fill="white" />
-                  <rect x="9" y="1" width="6" height="6" fill="white" opacity="0.8" />
-                  <rect x="1" y="9" width="6" height="6" fill="white" opacity="0.8" />
-                  <rect x="9" y="9" width="6" height="6" fill="white" opacity="0.5" />
-                </svg>
-              </div>
-              <span className="font-bold text-sm tracking-tight font-sans text-zinc-900 dark:text-white uppercase transition-colors duration-300 group-hover:text-[#2563eb]">
-                Poltica <span className="text-[10px] text-zinc-400 font-normal">Systems</span>
-              </span>
-            </div>
-
-            {/* Menu Items */}
-            <nav className="hidden md:flex items-center gap-6 text-xs text-zinc-600 dark:text-zinc-300 font-medium">
-              <span className="cursor-pointer hover:text-[#2563eb] transition-colors relative py-1 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-[#2563eb] after:scale-x-0 hover:after:scale-x-100 after:transition-transform">Campaign OS</span>
-              <span className="cursor-pointer hover:text-[#2563eb] transition-colors relative py-1 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-[#2563eb] after:scale-x-0 hover:after:scale-x-100 after:transition-transform">Telecom SLA</span>
-              <span className="cursor-pointer hover:text-[#2563eb] transition-colors relative py-1 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-[#2563eb] after:scale-x-0 hover:after:scale-x-100 after:transition-transform">Compliance</span>
-              <span className="cursor-pointer hover:text-[#2563eb] transition-colors relative py-1 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-[#2563eb] after:scale-x-0 hover:after:scale-x-100 after:transition-transform">Pricing Plan</span>
-            </nav>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <span className="hidden lg:inline text-[10px] text-zinc-400 font-mono bg-zinc-200/40 dark:bg-zinc-800/40 px-2 py-0.5 rounded">
-              Entity: octaleads Private Limited
+      <header className="sticky top-0 z-45 h-[79px] border-b border-[#e6eaf0] bg-white/95 px-4 text-[#07142f] backdrop-blur-sm sm:pl-7 sm:pr-10">
+        <div className="relative grid h-full w-full grid-cols-[1fr_auto] items-center">
+          <a href="#platform" aria-label="Poltica Systems home" className="group flex items-center gap-2.5 justify-self-start">
+            <LayoutGrid className="h-7 w-7 shrink-0 fill-[#0b5cff] text-[#0b5cff]" strokeWidth={1.8} />
+            <span className="flex items-baseline gap-1.5 whitespace-nowrap">
+              <span className="text-[20px] font-extrabold tracking-[-0.035em]">POLTICA</span>
+              <span className="text-[15px] font-normal tracking-[-0.02em] text-[#26344d]">SYSTEMS</span>
             </span>
+          </a>
+
+          <nav aria-label="Primary navigation" className="absolute left-[45%] hidden -translate-x-1/2 items-center gap-11 text-[14px] font-medium text-[#07142f] md:flex">
+            <a href="#platform" className="flex items-center gap-1.5 transition-colors hover:text-[#0b5cff]">Product <ChevronDown className="h-3.5 w-3.5" /></a>
+            <a href="#solutions" className="flex items-center gap-1.5 transition-colors hover:text-[#0b5cff]">Solutions <ChevronDown className="h-3.5 w-3.5" /></a>
+            <a href="#security" className="transition-colors hover:text-[#0b5cff]">Security</a>
+            <a href="#pricing" className="transition-colors hover:text-[#0b5cff]">Pricing</a>
+          </nav>
+
+          <div className="flex items-center gap-3 justify-self-end sm:gap-4">
+            <select aria-label="Language" className="hidden h-10 w-[135px] rounded-[6px] border border-[#d8dee8] bg-white px-3 text-[14px] text-[#07142f] outline-none sm:block">
+              <option className="text-slate-900">English</option>
+              <option className="text-slate-900">తెలుగు</option>
+              <option className="text-slate-900">हिंदी</option>
+            </select>
             <Button 
-              onClick={() => { setActiveTab("signin"); setSignupStep(1); }} 
+              onClick={() => { setActiveTab("signin"); setSignupStep(1); setPortalOpen(true); }}
               variant="outline" 
-              className="h-8 text-[11px] px-4 border-zinc-200 dark:border-zinc-700 font-semibold hover:bg-zinc-100 dark:hover:bg-zinc-850 hover:scale-105 transition-all duration-200"
+              className="h-10 border-transparent bg-transparent px-4 text-[14px] font-medium text-[#07142f] hover:bg-[#f5f7fa] hover:text-[#07142f]"
             >
-              Portal Login
+              Sign In
             </Button>
+            <Button onClick={() => { setActiveTab("signup"); setSignupStep(1); setPortalOpen(true); }} className="hidden h-11 w-[140px] rounded-[6px] bg-[#0b5cff] px-0 text-[14px] font-medium text-white hover:bg-[#084dd6] sm:flex">Book a Demo</Button>
           </div>
         </div>
       </header>
 
       {/* Main Grid Hero & Control Console */}
-      <main className="flex-1 max-w-[1280px] w-full mx-auto px-6 py-12 grid gap-10 lg:grid-cols-12 items-start animate-fade-in-up">
+      <main id="platform" className="flex-1 w-full mx-auto grid gap-0 lg:grid-cols-[42.5%_57.5%] items-stretch border-b border-[#e6eaf0]">
         
         {/* Left Hand: Enterprise Value Proposition & Showcase Dashboard */}
-        <section className="lg:col-span-7 space-y-8 animate-fade-in-up">
+        <section className="flex flex-col justify-center space-y-7 px-5 py-12 sm:px-10 lg:px-[3.7vw] lg:py-12">
           <div className="space-y-4">
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#2563eb]/10 text-[#2563eb] text-[10px] font-bold uppercase tracking-widest animate-pulse">
-              <ShieldCheck className="h-3.5 w-3.5" /> ECI & TRAI Compliant Gateway
-            </div>
-            <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-zinc-900 dark:text-white leading-[1.1] bg-gradient-to-r from-zinc-900 to-zinc-700 dark:from-white dark:to-zinc-400 bg-clip-text text-transparent">
-              Enterprise Electoral Communications Infrastructure.
+            <h1 className="max-w-[650px] text-5xl sm:text-[64px] font-extrabold tracking-[-0.05em] text-[#07142f] leading-[1.02]">
+              Build the Campaign People Believe In<span className="text-[#0b5cff]">.</span>
             </h1>
-            <p className="text-zinc-650 dark:text-zinc-300 text-sm sm:text-base leading-relaxed max-w-[620px]">
-              Poltica Systems delivers high-capacity, direct-carrier telecom routing for political campaigns. Orchestrate carrier-grade SMS, verified Meta WhatsApp broadcast API, and interactive automated cloud IVR phone dialers in one single secured tenant console.
+            <p className="text-[#41516d] text-base sm:text-lg leading-relaxed max-w-[540px]">
+              Poltica turns voter conversations and field activity into one focused operation—so your team reaches farther, responds faster, and earns trust where it matters.
             </p>
           </div>
 
+          <div className="hidden">
+            <div className="flex gap-3"><MessageSquare className="mt-0.5 h-5 w-5 text-[#1756c2]" /><div><strong className="block">High-Capacity, Direct-Carrier Routing</strong><span className="text-[#607086]">Reliable delivery at scale with DLT-registered routes.</span></div></div>
+            <div className="flex gap-3"><MessageCircle className="mt-0.5 h-5 w-5 text-[#1756c2]" /><div><strong className="block">Verified WhatsApp Business API</strong><span className="text-[#607086]">Verified sender identity for trusted two-way engagement.</span></div></div>
+            <div className="flex gap-3"><PhoneCall className="mt-0.5 h-5 w-5 text-[#1756c2]" /><div><strong className="block">Interactive IVR at Scale</strong><span className="text-[#607086]">Automated voice outreach and citizen feedback loops.</span></div></div>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Button onClick={() => { setActiveTab("signup"); setPortalOpen(true); }} className="h-12 rounded-[6px] bg-[#0b5cff] px-6 text-sm font-bold text-white hover:bg-[#084dd6]">Start Building Momentum <ArrowRight className="ml-2 h-4 w-4" /></Button>
+            <Button onClick={() => document.getElementById('product-proof')?.scrollIntoView({behavior:'smooth'})} variant="outline" className="h-12 rounded-[6px] border-[#9aabd0] bg-white px-6 text-sm font-semibold text-[#0b5cff]">See the Platform</Button>
+          </div>
+          <p className="max-w-[520px] text-xs leading-relaxed text-[#718096]">Poltica is an independent SaaS platform and does not guarantee election outcomes.</p>
+
           {/* Interactive Live Metrics Mock Console */}
-          <div className="glass-card p-6 space-y-5 hover:scale-[1.01] hover:border-zinc-300 dark:hover:border-zinc-700 transition-all duration-300">
+          <div className="hidden">
             <div className="flex justify-between items-center border-b border-zinc-100 dark:border-zinc-900 pb-3">
               <div className="flex items-center gap-2.5">
                 <Database className="h-4.5 w-4.5 text-[#2563eb]" />
@@ -553,7 +579,7 @@ export default function RootAuthPage() {
           </div>
 
           {/* Infrastructure Feature Catalog */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-2">
+          <div className="hidden">
             <div className="flex gap-4 p-3 rounded-lg hover:bg-white/40 dark:hover:bg-zinc-900/30 transition-all duration-300">
               <div className="h-9 w-9 bg-[#2563eb]/10 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
                 <Radio className="h-4.5 w-4.5 text-[#2563eb]" />
@@ -597,8 +623,21 @@ export default function RootAuthPage() {
         </section>
 
         {/* Right Hand: Interactive Portal Access & Signup Console */}
-        <section className="lg:col-span-5">
-          <div className="bg-white/80 dark:bg-black/60 backdrop-blur-xl border border-white/20 dark:border-white/10 shadow-[0_20px_50px_rgba(37,99,235,0.08)] dark:shadow-[0_20px_50px_rgba(37,99,235,0.15)] rounded-2xl overflow-hidden transition-all duration-300 hover:shadow-[0_20px_50px_rgba(37,99,235,0.15)] hover:scale-[1.005]">
+        <section className="relative min-w-0 bg-[#eef2f7]">
+          {!portalOpen && (
+            <div className="relative h-full min-h-[500px] overflow-hidden lg:min-h-[552px]">
+              <Image src="/images/international-campaign-team.png" alt="International campaign leadership team planning voter outreach" fill priority unoptimized sizes="100vw" className="object-cover lg:hidden" />
+              <div className="absolute inset-0 hidden bg-no-repeat lg:block" role="img" aria-label="International campaign leadership team planning voter outreach" style={{backgroundImage:"url('/images/selected-home-reference.png')",backgroundSize:"100vw auto",backgroundPosition:"right -5.31vw"}} />
+              <div className="absolute inset-x-5 bottom-5 grid grid-cols-3 divide-x divide-[#e2e7ee] rounded-[8px] border border-[#d8dee8] bg-white p-4 shadow-[0_10px_28px_rgba(7,20,47,0.14)] sm:inset-x-8 lg:hidden">
+                <div className="px-2 sm:px-4"><span className="block text-[10px] text-[#66758c]">Voters Reached</span><strong className="mt-1 block text-lg sm:text-2xl">12.46M</strong></div>
+                <div className="px-2 sm:px-4"><span className="block text-[10px] text-[#66758c]">Conversations</span><strong className="mt-1 block text-lg sm:text-2xl">11.34M</strong></div>
+                <div className="px-2 sm:px-4"><span className="block text-[10px] text-[#66758c]">Momentum</span><strong className="mt-1 block text-lg text-[#129054] sm:text-2xl">78<span className="text-sm font-medium text-[#66758c]">/100</span></strong></div>
+              </div>
+            </div>
+          )}
+          {portalOpen && (
+          <div className="relative overflow-hidden rounded-[5px] border border-[#cdd7e4] bg-white shadow-[0_14px_35px_rgba(11,31,58,0.10)]">
+            <button onClick={() => setPortalOpen(false)} className="absolute right-3 top-3 z-10 text-xs font-semibold text-[#607086] hover:text-[#0b1f3a]">Close</button>
             <div className="h-[4px] bg-gradient-to-r from-[#2563eb] via-[#10b981] to-[#2563eb] w-full" />
             
             <Tabs value={activeTab} onValueChange={(val) => { setActiveTab(val); setAuthError(""); setOtpSent(false); setSignupStep(1); }} className="flex flex-col w-full">
@@ -1120,29 +1159,40 @@ export default function RootAuthPage() {
               </CardContent>
             </Tabs>
           </div>
+          )}
         </section>
       </main>
 
-      {/* Compliance / Intermediary Exemption Panel */}
-      <section className="bg-white/50 dark:bg-black/30 border-y border-[#e2e8f0]/30 dark:border-zinc-800/40 py-10 select-none backdrop-blur-md">
-        <div className="max-w-[1280px] w-full mx-auto px-6 grid gap-8 md:grid-cols-3">
-          <div className="space-y-2">
-            <h4 className="text-xs font-bold text-zinc-900 dark:text-white uppercase tracking-wider">TRAI/DLT Routing Status</h4>
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
-              We coordinate transactional and promotional routes via registered carrier gateways, adhering fully to ECI MCC guidelines. Candidates provide approved content templates.
-            </p>
+      <section id="security" className="border-b border-[#e6eaf0] bg-white py-9 text-[#07142f]">
+        <div className="mx-auto grid w-full max-w-[1420px] gap-5 px-5 sm:px-8 md:grid-cols-2 xl:grid-cols-4">
+          {[[MessageCircle,'Multi-channel reach'],[Users,'Organized field teams'],[BarChart3,'Real-time insight'],[ShieldCheck,'Secure by design']].map(([Icon,title]) => {
+            const ProofIcon = Icon as React.ElementType;
+            return (
+            <div key={title as string} className="flex items-center gap-4 border-[#e1e6ed] xl:border-r xl:pr-5 last:border-r-0">
+              <ProofIcon className="h-6 w-6 text-[#07142f]" />
+              <h4 className="text-sm font-semibold">{title as string}</h4>
+            </div>
+          );})}
+        </div>
+      </section>
+
+      <section id="product-proof" className="border-b border-[#e6eaf0] bg-[#fbfcfe] py-10 sm:py-10">
+        <div className="mx-auto grid max-w-[1320px] items-center gap-12 px-5 sm:px-8 lg:grid-cols-[1.25fr_0.75fr]">
+          <div className="overflow-hidden rounded-[8px] border border-[#dce2eb] bg-white shadow-[0_14px_36px_rgba(7,20,47,0.08)]">
+            <div className="flex items-center justify-between border-b border-[#e6eaf0] px-5 py-4"><strong className="text-sm">Campaign Command</strong><span className="text-xs text-[#66758c]">All constituencies</span></div>
+            <div className="p-5 sm:p-7"><div className="flex items-end justify-between"><div><span className="text-xs text-[#66758c]">Campaign momentum</span><strong className="mt-1 block text-4xl text-[#129054]">78<span className="text-base font-medium text-[#66758c]">/100</span></strong></div><span className="text-xs font-semibold text-[#129054]">+18% this month</span></div><div className="mt-6 h-[240px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={deliverySeries}><CartesianGrid stroke="#edf0f4" vertical={false}/><XAxis dataKey="time" tick={{fontSize:10,fill:'#718096'}} axisLine={false} tickLine={false}/><YAxis tick={{fontSize:10,fill:'#718096'}} axisLine={false} tickLine={false}/><Tooltip/><Line type="monotone" dataKey="messages" stroke="#129054" strokeWidth={3} dot={false}/></LineChart></ResponsiveContainer></div></div>
           </div>
-          <div className="space-y-2">
-            <h4 className="text-xs font-bold text-zinc-900 dark:text-white uppercase tracking-wider">IT Act 2000 Section 79 Compliance</h4>
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
-              Poltica Systems (octaleads Private Limited) acts strictly as a technology intermediary pipeline. The candidate accepts sole responsibility, risk, and cost for messages transmitted.
-            </p>
-          </div>
-          <div className="space-y-2">
-            <h4 className="text-xs font-bold text-zinc-900 dark:text-white uppercase tracking-wider">Secure Hosting & Privacy</h4>
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
-              All constituent numbers and custom profile details are siloed per tenant. Platform does not access voter registries. Protected under standard database encryption policies.
-            </p>
+          <div className="max-w-[470px]"><span className="text-xs font-bold uppercase tracking-[0.14em] text-[#0b5cff]">One command center</span><h2 className="mt-4 text-4xl font-bold tracking-[-0.04em] text-[#07142f]">One platform for every campaign move.</h2><p className="mt-5 text-base leading-relaxed text-[#52627a]">Reach voters across SMS, WhatsApp and IVR. Give field teams a shared operating picture. Turn every response into the next best action—without losing control of compliance, credits or campaign data.</p><Button onClick={() => { setActiveTab('signup'); setPortalOpen(true); window.scrollTo({top:0,behavior:'smooth'}); }} variant="link" className="mt-5 h-auto p-0 text-sm font-bold text-[#0b5cff]">Explore the platform <ArrowRight className="ml-2 h-4 w-4"/></Button></div>
+        </div>
+      </section>
+
+      <section id="solutions" className="bg-white py-14 sm:py-20">
+        <div className="mx-auto max-w-[1280px] px-5 text-center sm:px-8">
+          <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#1756c2]">Solutions</span>
+          <h2 className="mx-auto mt-3 max-w-3xl text-2xl font-bold tracking-tight text-[#0b1f3a] sm:text-3xl">Built for the scale and discipline of modern campaigns.</h2>
+          <p className="mx-auto mt-3 max-w-2xl text-sm leading-relaxed text-[#607086]">Unify outreach, conversations and feedback in one secure platform—so every message is delivered, every response is captured, and every action is auditable.</p>
+          <div className="mt-10 grid gap-px overflow-hidden rounded-[5px] border border-[#d8e0ea] bg-[#d8e0ea] text-left sm:grid-cols-2 lg:grid-cols-4">
+            {[[MessageSquare,'Mass Outreach at Scale'],[MessageCircle,'Two-Way Engagement'],[PhoneCall,'Voice Outreach with IVR'],[ShieldCheck,'Operational Accountability']].map(([Icon,title]) => { const SolutionIcon = Icon as React.ElementType; return <div key={title as string} className="bg-white p-5"><SolutionIcon className="h-5 w-5 text-[#1756c2]"/><h3 className="mt-4 text-sm font-bold text-[#0b1f3a]">{title as string}</h3><p className="mt-2 text-xs leading-relaxed text-[#607086]">Secure, measurable workflows designed for accountable constituency communication.</p></div>; })}
           </div>
         </div>
       </section>
