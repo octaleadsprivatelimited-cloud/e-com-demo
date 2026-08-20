@@ -259,17 +259,9 @@ export default function CustomerIVR() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="hi-IN">Hindi (India)</SelectItem>
-                          <SelectItem value="mr-IN">Marathi (India)</SelectItem>
                           <SelectItem value="en-IN">English (India)</SelectItem>
                           <SelectItem value="te-IN">Telugu (India)</SelectItem>
-                          <SelectItem value="kn-IN">Kannada (India)</SelectItem>
-                          <SelectItem value="ta-IN">Tamil (India)</SelectItem>
-                          <SelectItem value="bn-IN">Bengali (India)</SelectItem>
-                          <SelectItem value="gu-IN">Gujarati (India)</SelectItem>
-                          <SelectItem value="ml-IN">Malayalam (India)</SelectItem>
-                          <SelectItem value="pa-IN">Punjabi (India)</SelectItem>
-                          <SelectItem value="od-IN">Odia (India)</SelectItem>
+                          <SelectItem value="hi-IN">Hindi (India)</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>

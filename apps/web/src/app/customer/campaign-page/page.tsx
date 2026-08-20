@@ -39,17 +39,11 @@ import {
 // Supported languages list
 const SUPPORTED_LANGUAGES = [
   { code: "en", name: "English", nativeName: "English" },
-  { code: "hi", name: "Hindi", nativeName: "हिंदी" },
-  { code: "mr", name: "Marathi", nativeName: "मराठी" },
   { code: "te", name: "Telugu", nativeName: "తెలుగు" },
-  { code: "kn", name: "Kannada", nativeName: "ಕನ್ನಡ" },
-  { code: "ta", name: "Tamil", nativeName: "தமிழ்" },
-  { code: "bn", name: "Bengali", nativeName: "বাংলা" },
-  { code: "gu", name: "Gujarati", nativeName: "ગુજરાતી" },
-  { code: "ml", name: "Malayalam", nativeName: "മലയാളം" },
-  { code: "pa", name: "Punjabi", nativeName: "ਪੰਜਾਬੀ" },
-  { code: "od", name: "Odia", nativeName: "ଓଡ଼ିଆ" }
+  { code: "hi", name: "Hindi", nativeName: "हिंदी" }
 ];
+
+const SUPPORTED_LANGUAGE_CODES = new Set(SUPPORTED_LANGUAGES.map(({ code }) => code));
 
 // YouTube video link parser using youtube-nocookie.com
 const getYoutubeEmbedUrl = (url: string, autoplay: boolean) => {
@@ -95,41 +89,9 @@ const getYoutubeEmbedUrl = (url: string, autoplay: boolean) => {
 const getAutoDetectedLanguage = (region: string) => {
   if (!region) return "en";
   const r = region.toLowerCase();
-  // Marathi — Maharashtra
-  if (r.includes("pune") || r.includes("mumbai") || r.includes("nagpur") || r.includes("maharashtra") || r.includes("sadashiv") || r.includes("thane") || r.includes("nashik") || r.includes("aurangabad") || r.includes("kolhapur") || r.includes("solapur")) {
-    return "mr";
-  }
   // Telugu — Telangana & Andhra Pradesh
   if (r.includes("hyderabad") || r.includes("telangana") || r.includes("andhra") || r.includes("tirupati") || r.includes("vijayawada") || r.includes("visakhapatnam")) {
     return "te";
-  }
-  // Kannada — Karnataka
-  if (r.includes("bangalore") || r.includes("bengaluru") || r.includes("karnataka") || r.includes("mysore") || r.includes("hubli") || r.includes("mangalore")) {
-    return "kn";
-  }
-  // Tamil — Tamil Nadu
-  if (r.includes("chennai") || r.includes("tamil") || r.includes("madurai") || r.includes("coimbatore") || r.includes("salem") || r.includes("trichy")) {
-    return "ta";
-  }
-  // Bengali — West Bengal
-  if (r.includes("kolkata") || r.includes("bengal") || r.includes("howrah") || r.includes("siliguri") || r.includes("durgapur")) {
-    return "bn";
-  }
-  // Gujarati — Gujarat
-  if (r.includes("ahmedabad") || r.includes("gujarat") || r.includes("surat") || r.includes("vadodara") || r.includes("rajkot")) {
-    return "gu";
-  }
-  // Malayalam — Kerala
-  if (r.includes("kerala") || r.includes("kochi") || r.includes("trivandrum") || r.includes("thiruvananthapuram") || r.includes("kozhikode") || r.includes("calicut")) {
-    return "ml";
-  }
-  // Punjabi — Punjab
-  if (r.includes("punjab") || r.includes("amritsar") || r.includes("ludhiana") || r.includes("chandigarh") || r.includes("jalandhar") || r.includes("patiala")) {
-    return "pa";
-  }
-  // Odia — Odisha
-  if (r.includes("odisha") || r.includes("orissa") || r.includes("bhubaneswar") || r.includes("cuttack") || r.includes("puri")) {
-    return "od";
   }
   // Hindi — North/Central India
   if (r.includes("delhi") || r.includes("patna") || r.includes("up") || r.includes("mp") || r.includes("bihar") || r.includes("lucknow") || r.includes("jaipur") || r.includes("rajasthan") || r.includes("bhopal") || r.includes("varanasi")) {
@@ -353,7 +315,9 @@ export default function CampaignPageBuilder() {
         // Auto detect default language based on region
         const areaName = activeUser.area || activeUser.district || "";
         const autoLang = getAutoDetectedLanguage(areaName);
-        const savedDefault = activeUser.defaultLanguage || autoLang;
+        const savedDefault = SUPPORTED_LANGUAGE_CODES.has(activeUser.defaultLanguage)
+          ? activeUser.defaultLanguage
+          : autoLang;
         setDefaultLanguage(savedDefault);
         setActiveEditingLang(savedDefault);
         setPreviewLanguage(savedDefault);
@@ -1341,7 +1305,7 @@ export default function CampaignPageBuilder() {
               <Check className="h-4 w-4" /> Region auto-detected: {SUPPORTED_LANGUAGES.find(l => l.code === defaultLanguage)?.name || "English"} ({defaultLanguage})
             </span>
             <p className="text-muted-foreground leading-relaxed text-[11px]">
-              Voter auto-loads the preferred regional language (e.g., Kannada for Karnataka, Marathi for Maharashtra, Tamil for Tamil Nadu) based on candidate's constituency, overrideable manually.
+              Voters receive Telugu for Telangana and Andhra Pradesh, Hindi for supported Hindi-region constituencies, and English elsewhere. The language can also be selected manually.
             </p>
           </div>
         </div>
