@@ -24,7 +24,9 @@ export class AuditService {
         event,
         ...meta,
       };
-      fs.appendFileSync(this.file, JSON.stringify(entry) + '\n', 'utf8');
+      void fs.promises
+        .appendFile(this.file, JSON.stringify(entry) + '\n', 'utf8')
+        .catch(() => undefined);
     } catch {
       // Auditing must never break the request path.
     }

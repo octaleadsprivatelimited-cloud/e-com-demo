@@ -214,7 +214,7 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
       </div>
 
       {/* Main content */}
-      <div className="flex w-full flex-col sm:pl-[225px]">
+      <div className="flex w-full flex-col sm:pl-[252px]">
         <CustomerHeader onMenuToggle={() => setSidebarOpen(true)} />
         <main className="flex-1 pb-[68px] sm:pb-0">
           {children}

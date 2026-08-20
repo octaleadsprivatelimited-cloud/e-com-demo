@@ -15,7 +15,8 @@ import {
   Globe,
   Receipt,
   FileText,
-  LifeBuoy
+  LifeBuoy,
+  Activity
 } from "lucide-react";
 
 const navItems = [
@@ -76,62 +77,47 @@ export function CustomerSidebar() {
   };
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-20 hidden w-[225px] flex-col bg-white dark:bg-black text-[#515154] dark:text-[#64748b] border-r border-[#e2e8f0] dark:border-[#0f172a] sm:flex select-none">
+    <aside className="fixed inset-y-0 left-0 z-20 hidden w-[252px] select-none flex-col border-r border-[#18365d] bg-[#06254b] text-white sm:flex">
       {/* Brand header */}
-      <div className="flex h-[56px] items-center px-5 border-b border-[#e2e8f0] dark:border-[#0f172a]">
+      <div className="flex h-[72px] items-center border-b border-white/10 px-6">
         <Link href="/customer" className="flex items-center gap-3">
-          <div className="h-[28px] w-[28px] rounded-md bg-black dark:bg-white flex items-center justify-center shadow-sm">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-              <rect x="1" y="1" width="6" height="6" fill="currentColor" className="text-white dark:text-black" />
-              <rect x="9" y="1" width="6" height="6" fill="currentColor" className="text-white dark:text-black" opacity="0.8" />
-              <rect x="1" y="9" width="6" height="6" fill="currentColor" className="text-white dark:text-black" opacity="0.8" />
-              <rect x="9" y="9" width="6" height="6" fill="currentColor" className="text-white dark:text-black" opacity="0.5" />
-            </svg>
-          </div>
-          <span className="font-bold text-sm text-black dark:text-white tracking-tight">Poltica</span>
+          <Activity className="h-7 w-7 text-[#4f8cff]" />
+          <span className="text-xl font-bold tracking-tight text-white">Poltica</span>
         </Link>
       </div>
 
+      <div className="px-6 pt-5 text-[11px] font-medium uppercase tracking-[0.14em] text-blue-200/70">Campaign workspace</div>
+
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
         {navItems.map((item) => {
           const isActive = pathname === item.href || (item.href !== "/customer" && pathname.startsWith(item.href));
           return (
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 rounded-lg px-3 py-2 text-xs font-medium tracking-normal transition-all relative ${
+              className={`flex min-h-10 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                 isActive 
-                  ? 'bg-[#f1f5f9] dark:bg-[#0f172a] text-black dark:text-white font-semibold' 
-                  : 'hover:bg-[#f1f5f9]/50 dark:hover:bg-[#0f172a]/50 hover:text-black dark:hover:text-white'
+                  ? 'bg-[#174b86] text-white'
+                  : 'text-blue-100/80 hover:bg-white/8 hover:text-white'
               }`}
             >
-              <item.icon className={`h-[16px] w-[16px] shrink-0 transition-colors ${isActive ? 'text-black dark:text-white' : 'text-[#64748b]'}`} />
+              <item.icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-white' : 'text-blue-200/70'}`} />
               <span>{item.name}</span>
             </Link>
           );
         })}
       </nav>
 
-      {/* Switch Link */}
-      <div className="px-4 py-3 border-t border-[#e2e8f0] dark:border-[#0f172a] bg-white dark:bg-black">
-        <Link 
-          href="/admin" 
-          className="flex items-center justify-center gap-2 rounded-lg border border-[#d2d2d7] dark:border-[#333] px-3 py-2 text-[10px] font-bold text-black dark:text-white hover:bg-[#f1f5f9] dark:hover:bg-[#0f172a] transition-all w-full select-none"
-        >
-          Switch to Admin Portal
-        </Link>
-      </div>
-
       {/* Footer Profile */}
-      <div className="border-t border-[#e2e8f0] dark:border-[#0f172a] p-4 bg-[#f1f5f9]/40 dark:bg-[#1c1c1e]/40">
+      <div className="border-t border-white/10 p-4">
         <div className="flex items-center gap-3">
-          <div className="h-[32px] w-[32px] rounded-full bg-black dark:bg-white flex items-center justify-center text-[10px] font-bold text-white dark:text-black shrink-0 shadow-sm">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#174b86] text-[11px] font-bold text-white">
             {getInitials(user.name)}
           </div>
           <div className="flex flex-col min-w-0">
-            <span className="text-xs font-bold text-black dark:text-white truncate">{user.name}</span>
-            <span className="text-[10px] text-[#64748b] truncate">{user.district} District</span>
+            <span className="truncate text-sm font-semibold text-white">{user.name}</span>
+            <span className="truncate text-xs text-blue-200/65">{user.district} District</span>
           </div>
         </div>
       </div>

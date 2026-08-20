@@ -10,6 +10,7 @@ import { AuditService } from './common/audit.service';
 async function bootstrap() {
   // Disable Nest's default body parser so we can enforce strict size limits.
   const app = await NestFactory.create(AppModule, { bodyParser: false });
+  app.enableShutdownHooks();
 
   // ── Hardened HTTP security headers ────────────────────────────
   // API responses are JSON; disable helmet's CSP (the browser app enforces its
@@ -28,6 +29,9 @@ async function bootstrap() {
   // Remove framework fingerprinting.
   const expressInstance = app.getHttpAdapter().getInstance();
   expressInstance.disable('x-powered-by');
+  // Required behind a managed load balancer so request IPs and throttling are
+  // based on the real client. Keep the hop count explicit to prevent spoofing.
+  expressInstance.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
 
   // ── Strict request body size limits (DoS protection) ──────────
   app.use(json({ limit: '64kb' }));

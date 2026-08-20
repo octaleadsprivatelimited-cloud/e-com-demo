@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { candidatesApi, type Candidate } from "@/lib/api";
+import { CustomerOverview } from "@/components/customer/CustomerOverview";
 // (dashboard reads live balances from the API with a cached-first fallback)
 
 const chartData = [
@@ -87,6 +88,11 @@ export default function CustomerDashboard() {
       clearInterval(interval);
     };
   }, [load]);
+
+  return <CustomerOverview quotas={quotas} loading={loading} />;
+
+  /* Legacy dashboard markup retained temporarily during the visual migration. */
+  /* eslint-disable no-unreachable */
 
   return (
     <div className="p-6 sm:p-8 space-y-8 max-w-[1200px] animate-fade-in-up">

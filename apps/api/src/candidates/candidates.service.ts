@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { EntityRepository } from '../common/entity.repository';
 
 export interface Candidate {
@@ -105,19 +105,21 @@ export class CandidatesService implements OnModuleInit {
     id: string,
     delta: Partial<{ sms: number; wa: number; ivr: number }>,
   ): Promise<Candidate> {
-    const c = await this.findById(id);
-    if (!c) throw new NotFoundException(`Candidate ${id} not found`);
-    const src = c.balances || { sms: 0, wa: 0, ivr: 0 };
-    const balances = { sms: src.sms || 0, wa: src.wa || 0, ivr: src.ivr || 0 };
-    for (const k of ['sms', 'wa', 'ivr'] as const) {
-      if (delta[k]) balances[k] = Math.max(0, (balances[k] || 0) + (delta[k] as number));
+    try {
+      const updated = await this.repo.adjustBalances<Candidate>(COLLECTION, id, delta);
+      if (!updated) throw new NotFoundException(`Candidate ${id} not found`);
+      return updated;
+    } catch (error: any) {
+      if (String(error?.message).startsWith('INSUFFICIENT_BALANCE:')) {
+        throw new BadRequestException('Insufficient credits for this operation.');
+      }
+      throw error;
     }
-    return this.update(id, { balances });
   }
 
   async addPaymentTotal(id: string, amount: number): Promise<Candidate> {
-    const c = await this.findById(id);
-    if (!c) throw new NotFoundException(`Candidate ${id} not found`);
-    return this.update(id, { payments: (c.payments || 0) + amount });
+    const updated = await this.repo.incrementNumber<Candidate>(COLLECTION, id, 'payments', amount);
+    if (!updated) throw new NotFoundException(`Candidate ${id} not found`);
+    return updated;
   }
 }

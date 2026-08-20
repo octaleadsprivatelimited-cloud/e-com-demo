@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import { Pool } from 'pg';
 
 /**
@@ -13,7 +13,7 @@ import { Pool } from 'pg';
  * On first run it auto-migrates data from the legacy `kv_store` blob table.
  */
 @Injectable()
-export class EntityRepository {
+export class EntityRepository implements OnApplicationShutdown {
   private readonly logger = new Logger('Entities');
   private pool: Pool | null = null;
   ready = false;
@@ -24,7 +24,16 @@ export class EntityRepository {
       this.logger.warn('DATABASE_URL not set — per-row repository disabled.');
       return;
     }
-    this.pool = new Pool({ connectionString: url, max: 20, connectionTimeoutMillis: 5000 });
+    this.pool = new Pool({
+      connectionString: url,
+      max: Number(process.env.DB_POOL_MAX || 20),
+      min: Number(process.env.DB_POOL_MIN || 2),
+      connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000),
+      idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS || 30000),
+      statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS || 15000),
+      query_timeout: Number(process.env.DB_QUERY_TIMEOUT_MS || 20000),
+      application_name: process.env.APP_NAME || 'poltica-api',
+    });
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS entities (
         collection TEXT NOT NULL,
@@ -34,12 +43,18 @@ export class EntityRepository {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (collection, id)
       )`);
-    // Expression indexes on the fields we actually query by.
-    await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_entities_collection ON entities (collection)`);
-    await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_entities_mobile   ON entities (collection, (data->>'mobile'))`);
-    await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_entities_owner    ON entities (collection, (data->>'ownerId'))`);
-    await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_entities_customer ON entities (collection, (data->>'customerId'))`);
-    await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_entities_email    ON entities (collection, (data->>'email'))`);
+    // Stored hot-path columns let PostgreSQL use stable B-tree indexes even
+    // when the repository field is selected dynamically.
+    await this.pool.query(`ALTER TABLE entities
+      ADD COLUMN IF NOT EXISTS mobile TEXT GENERATED ALWAYS AS (data->>'mobile') STORED,
+      ADD COLUMN IF NOT EXISTS owner_id TEXT GENERATED ALWAYS AS (data->>'ownerId') STORED,
+      ADD COLUMN IF NOT EXISTS customer_id TEXT GENERATED ALWAYS AS (data->>'customerId') STORED,
+      ADD COLUMN IF NOT EXISTS email TEXT GENERATED ALWAYS AS (data->>'email') STORED`);
+    await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_entities_collection_created ON entities (collection, created_at DESC)`);
+    await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_entities_mobile   ON entities (collection, mobile) WHERE mobile IS NOT NULL`);
+    await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_entities_owner    ON entities (collection, owner_id, created_at DESC) WHERE owner_id IS NOT NULL`);
+    await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_entities_customer ON entities (collection, customer_id, created_at DESC) WHERE customer_id IS NOT NULL`);
+    await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_entities_email    ON entities (collection, email) WHERE email IS NOT NULL`);
     this.ready = true;
     await this.migrateFromBlob();
     this.logger.log('Per-row entity store ready (PostgreSQL, indexed).');
@@ -83,9 +98,12 @@ export class EntityRepository {
   }
 
   async findBy<T = any>(collection: string, field: string, value: string): Promise<T | undefined> {
+    const column = this.indexedColumn(field);
     const { rows } = await this.pool!.query(
-      `SELECT data FROM entities WHERE collection = $1 AND data->>$2 = $3 LIMIT 1`,
-      [collection, field, String(value)],
+      column
+        ? `SELECT data FROM entities WHERE collection = $1 AND ${column} = $2 LIMIT 1`
+        : `SELECT data FROM entities WHERE collection = $1 AND data->>$2 = $3 LIMIT 1`,
+      column ? [collection, String(value)] : [collection, field, String(value)],
     );
     return rows[0]?.data;
   }
@@ -97,19 +115,26 @@ export class EntityRepository {
     limit = 5000,
     offset = 0,
   ): Promise<T[]> {
+    const column = this.indexedColumn(field);
     const { rows } = await this.pool!.query(
-      `SELECT data FROM entities WHERE collection = $1 AND data->>$2 = $3
-       ORDER BY created_at DESC LIMIT $4 OFFSET $5`,
-      [collection, field, String(value), limit, offset],
+      column
+        ? `SELECT data FROM entities WHERE collection = $1 AND ${column} = $2 ORDER BY created_at DESC LIMIT $3 OFFSET $4`
+        : `SELECT data FROM entities WHERE collection = $1 AND data->>$2 = $3 ORDER BY created_at DESC LIMIT $4 OFFSET $5`,
+      column
+        ? [collection, String(value), this.safeLimit(limit), Math.max(0, offset)]
+        : [collection, field, String(value), this.safeLimit(limit), Math.max(0, offset)],
     );
     return rows.map((r) => r.data);
   }
 
   /** Indexed count for one field value (e.g. contacts owned by a tenant). */
   async countBy(collection: string, field: string, value: string): Promise<number> {
+    const column = this.indexedColumn(field);
     const { rows } = await this.pool!.query(
-      `SELECT count(*)::int AS c FROM entities WHERE collection = $1 AND data->>$2 = $3`,
-      [collection, field, String(value)],
+      column
+        ? `SELECT count(*)::int AS c FROM entities WHERE collection = $1 AND ${column} = $2`
+        : `SELECT count(*)::int AS c FROM entities WHERE collection = $1 AND data->>$2 = $3`,
+      column ? [collection, String(value)] : [collection, field, String(value)],
     );
     return rows[0]?.c ?? 0;
   }
@@ -117,7 +142,7 @@ export class EntityRepository {
   async all<T = any>(collection: string, limit = 5000, offset = 0): Promise<T[]> {
     const { rows } = await this.pool!.query(
       `SELECT data FROM entities WHERE collection = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
-      [collection, limit, offset],
+      [collection, this.safeLimit(limit), Math.max(0, offset)],
     );
     return rows.map((r) => r.data);
   }
@@ -184,6 +209,58 @@ export class EntityRepository {
     return rows[0]?.data;
   }
 
+  /** Serialize balance changes so simultaneous sends cannot overspend credits. */
+  async adjustBalances<T = any>(
+    collection: string,
+    id: string,
+    delta: Partial<Record<'sms' | 'wa' | 'ivr', number>>,
+  ): Promise<T | undefined> {
+    const client = await this.pool!.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        `SELECT data FROM entities WHERE collection = $1 AND id = $2 FOR UPDATE`,
+        [collection, id],
+      );
+      if (!rows[0]) {
+        await client.query('ROLLBACK');
+        return undefined;
+      }
+      const entity = rows[0].data;
+      const balances = { sms: 0, wa: 0, ivr: 0, ...(entity.balances || {}) };
+      for (const channel of ['sms', 'wa', 'ivr'] as const) {
+        const change = Number(delta[channel] || 0);
+        const next = Number(balances[channel] || 0) + change;
+        if (!Number.isFinite(next) || next < 0) throw new Error(`INSUFFICIENT_BALANCE:${channel}`);
+        balances[channel] = next;
+      }
+      entity.balances = balances;
+      const updated = await client.query(
+        `UPDATE entities SET data = $3::jsonb, updated_at = now()
+         WHERE collection = $1 AND id = $2 RETURNING data`,
+        [collection, id, JSON.stringify(entity)],
+      );
+      await client.query('COMMIT');
+      return updated.rows[0]?.data;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async incrementNumber<T = any>(collection: string, id: string, field: string, amount: number): Promise<T | undefined> {
+    const { rows } = await this.pool!.query(
+      `UPDATE entities
+       SET data = jsonb_set(data, ARRAY[$3], to_jsonb(COALESCE((data->>$3)::numeric, 0) + $4::numeric)),
+           updated_at = now()
+       WHERE collection = $1 AND id = $2 RETURNING data`,
+      [collection, id, field, amount],
+    );
+    return rows[0]?.data;
+  }
+
   async remove(collection: string, id: string): Promise<boolean> {
     const res = await this.pool!.query(
       `DELETE FROM entities WHERE collection = $1 AND id = $2`,
@@ -204,5 +281,32 @@ export class EntityRepository {
   async seedIfEmpty<T = any>(collection: string, seed: Array<T & { id: string }>): Promise<void> {
     if ((await this.count(collection)) > 0) return;
     for (const item of seed) await this.insert(collection, item);
+  }
+
+  async healthCheck(): Promise<boolean> {
+    if (!this.pool || !this.ready) return false;
+    try {
+      await this.pool.query('SELECT 1');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.pool?.end();
+    this.ready = false;
+  }
+
+  async onApplicationShutdown(): Promise<void> {
+    await this.close();
+  }
+
+  private safeLimit(limit: number): number {
+    return Math.min(5000, Math.max(1, Number(limit) || 100));
+  }
+
+  private indexedColumn(field: string): string | undefined {
+    return ({ mobile: 'mobile', ownerId: 'owner_id', customerId: 'customer_id', email: 'email' } as Record<string, string>)[field];
   }
 }

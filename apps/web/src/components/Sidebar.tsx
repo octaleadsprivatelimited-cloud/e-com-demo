@@ -57,14 +57,6 @@ export function Sidebar() {
           );
         })}
       </nav>
-      <div className="mx-4 border-t border-white/10 px-0 py-4">
-        <Link 
-          href="/customer" 
-          className="flex w-full items-center justify-center gap-2 rounded-md border border-blue-300/30 px-3 py-2 text-xs font-semibold text-blue-100 transition-colors hover:bg-white/10"
-        >
-          View Candidate Portal
-        </Link>
-      </div>
       <div className="border-t border-white/10 p-4">
         <div className="flex items-center gap-3">
           <Avatar className="h-9 w-9">

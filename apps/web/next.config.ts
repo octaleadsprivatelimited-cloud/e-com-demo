@@ -4,6 +4,12 @@ const nextConfig: NextConfig = {
   // ── Performance ──────────────────────────────────────────────
   reactStrictMode: true,
 
+  // Keep Turbopack scoped to this application. The monorepo root also hosts
+  // unrelated tooling, which otherwise makes local route compilation stall.
+  turbopack: {
+    root: process.cwd(),
+  },
+
   // Compress responses with gzip/brotli
   compress: true,
 

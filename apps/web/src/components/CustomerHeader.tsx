@@ -62,7 +62,7 @@ export function CustomerHeader({ onMenuToggle }: { onMenuToggle?: () => void }) 
 
   return (
     <>
-      <header className="sticky top-0 z-30 flex h-[56px] items-center justify-between border-b border-[#e2e8f0] dark:border-[#0f172a] bg-white/80 dark:bg-black/85 backdrop-blur-md px-5 select-none">
+      <header className="sticky top-0 z-30 flex h-[72px] select-none items-center justify-between border-b border-[#e2e7ef] bg-white px-4 sm:px-7">
         {/* Left section */}
         <div className="flex items-center gap-2.5">
           <Button variant="ghost" size="icon" className="sm:hidden h-8 w-8 text-zinc-800 dark:text-zinc-200 hover:bg-[#f1f5f9] dark:hover:bg-[#0f172a]" onClick={onMenuToggle}>
@@ -75,10 +75,8 @@ export function CustomerHeader({ onMenuToggle }: { onMenuToggle?: () => void }) 
           </span>
           
           {/* Breadcrumb-style title */}
-          <div className="hidden sm:flex items-center gap-2 text-xs font-medium tracking-normal text-zinc-550 dark:text-zinc-400">
-            <span className="text-black dark:text-white font-semibold">Poltica</span>
-            <span className="text-zinc-300 dark:text-zinc-850">/</span>
-            <span className="text-zinc-500 dark:text-zinc-450">Candidate Workspace</span>
+          <div className="hidden sm:flex items-center gap-2 text-sm font-medium text-[#66758c]">
+            <span className="font-semibold text-[#0a1933]">Campaign workspace</span>
           </div>
         </div>
         
@@ -88,14 +86,14 @@ export function CustomerHeader({ onMenuToggle }: { onMenuToggle?: () => void }) 
           <input
             type="search"
             placeholder="Search campaign features..."
-            className="w-full rounded-lg bg-[#f1f5f9] dark:bg-[#0f172a] pl-9 pr-4 py-1.5 text-xs text-black dark:text-white placeholder-zinc-400 border border-transparent outline-none focus:bg-white dark:focus:bg-[#0f172a] focus:border-zinc-300 dark:focus:border-zinc-850 h-[34px] transition-all"
+            className="h-10 w-full rounded-md border border-[#d9e0ea] bg-white py-1.5 pl-9 pr-4 text-sm text-[#0a1933] outline-none placeholder:text-[#8792a5] focus:border-[#1264dc]"
           />
         </div>
 
         {/* Right section */}
         <div className="flex items-center gap-1.5">
           <Link href="/customer/billing">
-            <Button variant="ghost" size="sm" className="hidden sm:flex h-8.5 text-xs font-medium text-black dark:text-white hover:bg-[#f1f5f9] dark:hover:bg-[#0f172a] gap-1.5 rounded-lg border border-[#d2d2d7] dark:border-[#333]">
+            <Button variant="outline" size="sm" className="hidden h-9 gap-1.5 rounded-md border-[#d9e0ea] text-xs font-medium text-[#0a1933] hover:bg-[#f5f7fa] sm:flex">
               <CreditCard className="h-3.5 w-3.5 text-black dark:text-white" />
               Credits Balance
             </Button>
@@ -141,10 +139,10 @@ export function CustomerHeader({ onMenuToggle }: { onMenuToggle?: () => void }) 
 
           {/* User Profile Avatar Dropdown */}
           <DropdownMenu>
-            <DropdownMenuTrigger className="ml-2 pl-2 border-l border-[#e2e8f0] dark:border-[#333] cursor-pointer flex items-center justify-center outline-none">
+            <DropdownMenuTrigger className="ml-2 flex cursor-pointer items-center justify-center border-l border-[#e2e7ef] pl-3 outline-none">
               <Avatar className="h-7 w-7">
                 <AvatarImage src="https://github.com/shadcn.png" alt="@candidate" />
-                <AvatarFallback className="bg-[#1877f2] text-white text-[10px]">{initials}</AvatarFallback>
+                <AvatarFallback className="bg-[#082b56] text-white text-[10px]">{initials}</AvatarFallback>
               </Avatar>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-[200px] p-1 bg-white dark:bg-[#1b1b1b] border border-[#e2e8f0] dark:border-[#333] shadow-lg rounded-md">
