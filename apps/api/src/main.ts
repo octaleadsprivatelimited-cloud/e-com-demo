@@ -34,7 +34,10 @@ async function bootstrap() {
   expressInstance.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
 
   // ── Strict request body size limits (DoS protection) ──────────
-  app.use(json({ limit: '64kb' }));
+  app.use(json({
+    limit: '64kb',
+    verify: (req: any, _res, buffer) => { req.rawBody = Buffer.from(buffer); },
+  }));
   app.use(urlencoded({ extended: true, limit: '64kb' }));
 
   // Sensitive API data must never be cached by browsers/proxies.

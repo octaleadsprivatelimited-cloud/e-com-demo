@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { EntityRepository } from '../common/entity.repository';
+import * as crypto from 'crypto';
 
 export interface Candidate {
   id: string;
@@ -62,7 +63,7 @@ export class CandidatesService implements OnModuleInit {
     if (existing) return existing;
 
     const candidate: Candidate = {
-      id: data.id || `CAN-${Math.floor(100 + Math.random() * 900)}`,
+      id: data.id || `CAN-${crypto.createHash('sha256').update(String(data.mobile || crypto.randomUUID())).digest('hex').slice(0, 20)}`,
       name: data.name || 'Unnamed',
       mobile: data.mobile || '',
       status: (data.status as Candidate['status']) || 'Active',
@@ -87,9 +88,11 @@ export class CandidatesService implements OnModuleInit {
 
   /** Resolve the candidate for an authenticated user, creating one if missing. */
   async ensureFromUser(user: { id?: string; mobile?: string; name?: string }): Promise<Candidate> {
-    const found =
-      (user.id && (await this.findById(user.id))) ||
-      (user.mobile && (await this.findByMobile(user.mobile)));
+    const found = user.mobile
+      ? await this.findByMobile(user.mobile)
+      : user.id
+        ? await this.findById(user.id)
+        : undefined;
     if (found) return found;
     return this.create({
       id: user.id,

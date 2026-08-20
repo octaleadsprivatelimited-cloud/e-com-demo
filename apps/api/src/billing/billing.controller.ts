@@ -12,6 +12,14 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { BillingService } from './billing.service';
 import { CandidatesService } from '../candidates/candidates.service';
 import { AuditService } from '../common/audit.service';
+import * as crypto from 'crypto';
+
+const PACKAGES = {
+  sms_booster: { name: 'SMS Booster', amount: 10000, credits: { sms: 50000, wa: 0, ivr: 0 } },
+  ivr_booster: { name: 'IVR Booster', amount: 15000, credits: { sms: 0, wa: 0, ivr: 20000 } },
+  wa_booster: { name: 'WhatsApp Booster', amount: 8000, credits: { sms: 0, wa: 10000, ivr: 0 } },
+  all_in_one: { name: 'All One Package', amount: 12000, credits: { sms: 10000, wa: 5000, ivr: 5000 } },
+} as const;
 
 @Controller('billing')
 @UseGuards(JwtAuthGuard)
@@ -41,35 +49,35 @@ export class BillingController {
     return this.billing.listAll();
   }
 
-  /**
-   * Credit the tenant's balance after a successful payment and record the
-   * transaction. NOTE: for production this should be driven by the verified
-   * Razorpay webhook rather than a client call, so credits can never be forged.
-   */
+  /** Finalize a server-verified Razorpay payment grant exactly once. */
   @Post('topup')
   async topup(@Req() req: any, @Body() body: any) {
     const owner = await this.owner(req);
-    const credits = {
-      sms: Math.max(0, Math.floor(Number(body?.sms) || 0)),
-      wa: Math.max(0, Math.floor(Number(body?.wa) || 0)),
-      ivr: Math.max(0, Math.floor(Number(body?.ivr) || 0)),
-    };
-    const amount = Math.max(0, Number(body?.amount) || 0);
-    if (credits.sms + credits.wa + credits.ivr <= 0) {
-      throw new BadRequestException('At least one of sms / wa / ivr credits is required.');
+    const grant = String(body?.grant || '');
+    const signature = String(body?.signature || '');
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+    if (!grant || !signature || secret.length < 16) throw new BadRequestException('Verified payment grant is required.');
+    const expected = crypto.createHmac('sha256', secret).update(grant).digest('hex');
+    const a = Buffer.from(expected, 'hex');
+    const b = Buffer.from(signature, 'hex');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw new ForbiddenException('Invalid payment grant.');
+
+    let claim: any;
+    try { claim = JSON.parse(Buffer.from(grant, 'base64url').toString('utf8')); }
+    catch { throw new BadRequestException('Malformed payment grant.'); }
+    if (claim?.sub !== req.user?.id || claim?.exp < Date.now() || !claim?.paymentId) {
+      throw new ForbiddenException('Payment grant is expired or belongs to another account.');
     }
+    const pkg = PACKAGES[claim.packageId as keyof typeof PACKAGES];
+    if (!pkg) throw new BadRequestException('Unknown payment package.');
 
-    const updated = await this.candidates.adjustBalances(owner.id, credits);
-    await this.candidates.addPaymentTotal(owner.id, amount);
-    const payment = await this.billing.record({
-      ownerId: owner.id,
-      paymentId: body?.paymentId,
-      packageName: body?.packageName || 'Credit Purchase',
-      amount,
-      credits,
+    const result = await this.billing.finalizeVerified({
+      ownerId: owner.id, paymentId: String(claim.paymentId), packageName: pkg.name,
+      amount: pkg.amount, credits: { ...pkg.credits },
     });
-
-    this.audit.log('billing.topup', { ownerId: owner.id, amount, credits });
-    return { payment, balances: updated.balances };
+    this.audit.log(result.duplicate ? 'billing.topup.replay' : 'billing.topup', {
+      ownerId: owner.id, paymentId: claim.paymentId, packageId: claim.packageId,
+    });
+    return { payment: result.payment, balances: result.candidate.balances, duplicate: result.duplicate };
   }
 }

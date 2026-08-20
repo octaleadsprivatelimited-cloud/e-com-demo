@@ -36,9 +36,9 @@ class VerifyOtpDto {
   @IsNotEmpty()
   otp: string;
 
-  @IsOptional()
-  @IsString()
-  candidateId?: string;
+  // Legacy clients may still send this field. It is intentionally ignored:
+  // tenant identity is derived only from the OTP-verified mobile number.
+  @IsOptional() @IsString() candidateId?: string;
 }
 
 class EncryptCredentialDto {
@@ -127,7 +127,7 @@ export class AuthController {
     // Issue JWT session token
     const token = this.authService.issueToken({
       mobile: dto.mobile,
-      id: dto.candidateId || `CAN-${dto.mobile.slice(-4)}`,
+      id: `CUS-${crypto.createHash('sha256').update(dto.mobile).digest('hex').slice(0, 20)}`,
       role: 'customer',
     });
     this.audit.log('auth.login.success', {

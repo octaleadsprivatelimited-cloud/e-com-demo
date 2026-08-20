@@ -22,7 +22,7 @@ export class PaymentService {
     return crypto.createHmac('sha256', this.webhookSecret).update(payload).digest('hex');
   }
 
-  verifyWebhookSignature(payload: string, signature: string): boolean {
+  verifyWebhookSignature(payload: string | Buffer, signature: string): boolean {
     if (!signature) {
       return false;
     }

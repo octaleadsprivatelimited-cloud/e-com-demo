@@ -31,9 +31,9 @@ export class CandidatesController {
   @UseGuards(JwtAuthGuard)
   async me(@Req() req: any): Promise<Candidate> {
     const user = req.user;
-    const found =
-      (await this.candidates.findById(user.id)) ||
-      (await this.candidates.findByMobile(user.mobile));
+    const found = user.mobile
+      ? await this.candidates.findByMobile(user.mobile)
+      : await this.candidates.findById(user.id);
     if (!found) throw new NotFoundException('Candidate profile not found');
     return found;
   }
@@ -56,7 +56,20 @@ export class CandidatesController {
   @UseGuards(JwtAuthGuard)
   create(@Req() req: any, @Body() body: any): Promise<Candidate> {
     if (req.user?.role !== 'admin') {
-      body = { ...body, mobile: req.user?.mobile || body?.mobile };
+      // Explicit allowlist: customers cannot mass-assign balances, payment
+      // totals, status, IDs, credentials, or administrative fields.
+      body = {
+        mobile: req.user?.mobile,
+        name: typeof body?.name === 'string' ? body.name : undefined,
+        district: typeof body?.district === 'string' ? body.district : undefined,
+        area: typeof body?.area === 'string' ? body.area : undefined,
+        state: typeof body?.state === 'string' ? body.state : undefined,
+        pincode: typeof body?.pincode === 'string' ? body.pincode : undefined,
+        status: 'Active',
+        balances: { sms: 0, wa: 0, ivr: 0 },
+        payments: 0,
+        contacts: 0,
+      };
     }
     return this.candidates.create(body);
   }

@@ -12,8 +12,10 @@ export class PaymentController {
     @Body() body: any,
     @Req() req: any,
   ) {
-    // If rawBody is not enabled/available in Nest, stringify body
-    const rawPayload = JSON.stringify(body);
+    // Razorpay signs the exact HTTP bytes; parsed/re-serialized JSON is not an
+    // equivalent representation and can reject legitimate webhooks.
+    const rawPayload = req.rawBody as Buffer | undefined;
+    if (!rawPayload) throw new BadRequestException('Raw webhook payload unavailable');
     const isValid = this.paymentService.verifyWebhookSignature(rawPayload, signature);
 
     if (!isValid) {
@@ -41,7 +43,7 @@ export class PaymentController {
   @Post('simulate-webhook-signature')
   simulateSignature(@Body() body: any) {
     // Block this endpoint in production — it would let anyone forge webhook signatures
-    if (process.env.NODE_ENV === 'production') {
+    if (process.env.NODE_ENV === 'production' || process.env.ENABLE_WEBHOOK_SIMULATOR !== 'true') {
       throw new ForbiddenException(
         'Webhook simulation is disabled in production. Use the actual Razorpay payment gateway.',
       );

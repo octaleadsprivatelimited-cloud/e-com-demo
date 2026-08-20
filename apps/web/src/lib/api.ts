@@ -198,14 +198,7 @@ export interface Payment {
 export const billingApi = {
   payments: () => apiFetch<Payment[]>('/billing/payments'),
   allPayments: () => apiFetch<(Payment & { ownerId: string })[]>('/billing/all-payments'),
-  topup: (data: {
-    sms?: number;
-    wa?: number;
-    ivr?: number;
-    amount?: number;
-    packageName?: string;
-    paymentId?: string;
-  }) =>
+  topup: (data: { grant: string; signature: string }) =>
     apiFetch<{ payment: Payment; balances: { sms: number; wa: number; ivr: number } }>(
       '/billing/topup',
       { method: 'POST', body: JSON.stringify(data) },

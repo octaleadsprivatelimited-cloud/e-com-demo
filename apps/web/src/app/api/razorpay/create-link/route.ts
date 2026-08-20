@@ -1,17 +1,16 @@
 import { NextResponse } from 'next/server';
+import crypto from 'crypto';
 import { razorpayBasicAuthHeader } from '@/lib/razorpay-config';
+import { callbackOrigin, PAYMENT_PACKAGES, requireCustomer } from '@/lib/payment-security';
 
 export async function POST(req: Request) {
   try {
-    const { amount, description, notes, callbackUrl } = await req.json();
-
-    const amountNum = Number(amount);
-    if (!Number.isFinite(amountNum) || amountNum <= 0) {
-      return NextResponse.json(
-        { success: false, message: 'Invalid amount' },
-        { status: 400 }
-      );
-    }
+    const user = await requireCustomer(req.headers.get('authorization'));
+    if (!user) return NextResponse.json({ success: false, message: 'Authentication required' }, { status: 401 });
+    const { packageId } = await req.json();
+    const pkg = PAYMENT_PACKAGES[packageId as keyof typeof PAYMENT_PACKAGES];
+    if (!pkg) return NextResponse.json({ success: false, message: 'Unknown package' }, { status: 400 });
+    const referenceId = `poltica_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`;
 
     const response = await fetch('https://api.razorpay.com/v1/payment_links', {
       method: 'POST',
@@ -20,12 +19,13 @@ export async function POST(req: Request) {
         Authorization: razorpayBasicAuthHeader(),
       },
       body: JSON.stringify({
-        amount: Math.round(amountNum * 100), // in paise
+        amount: pkg.amount * 100,
         currency: 'INR',
-        description: description || 'Poltica Credit Purchase',
-        callback_url: callbackUrl,
+        description: `Poltica - ${pkg.name}`,
+        reference_id: referenceId,
+        callback_url: `${callbackOrigin(req.url)}/customer/billing/callback`,
         callback_method: 'get',
-        notes: notes || {},
+        notes: { ownerId: user.id, packageId },
       }),
     });
 
@@ -45,6 +45,7 @@ export async function POST(req: Request) {
       short_url: data.short_url,
       payment_link_id: data.id,
       amount: data.amount,
+      reference_id: referenceId,
     });
   } catch (error) {
     console.error('Payment link creation error:', error);

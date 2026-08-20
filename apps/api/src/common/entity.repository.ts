@@ -261,6 +261,68 @@ export class EntityRepository implements OnApplicationShutdown {
     return rows[0]?.data;
   }
 
+  /**
+   * Exactly-once payment finalization. The provider payment claim, immutable
+   * receipt, credit grant, and cumulative payment update share one transaction.
+   */
+  async finalizePayment<TCandidate = any, TPayment extends { id: string } = any>(input: {
+    candidateCollection: string;
+    candidateId: string;
+    paymentCollection: string;
+    payment: TPayment;
+    credits: { sms: number; wa: number; ivr: number };
+    amount: number;
+  }): Promise<{ duplicate: boolean; candidate: TCandidate; payment: TPayment }> {
+    const client = await this.pool!.connect();
+    try {
+      await client.query('BEGIN');
+      const claimed = await client.query(
+        `INSERT INTO entities (collection, id, data) VALUES ($1, $2, $3::jsonb)
+         ON CONFLICT (collection, id) DO NOTHING RETURNING data`,
+        [input.paymentCollection, input.payment.id, JSON.stringify(input.payment)],
+      );
+      if (!claimed.rowCount) {
+        const existing = await client.query(
+          `SELECT data FROM entities WHERE collection = $1 AND id = $2`,
+          [input.paymentCollection, input.payment.id],
+        );
+        const candidate = await client.query(
+          `SELECT data FROM entities WHERE collection = $1 AND id = $2`,
+          [input.candidateCollection, input.candidateId],
+        );
+        await client.query('COMMIT');
+        return { duplicate: true, candidate: candidate.rows[0]?.data, payment: existing.rows[0]?.data };
+      }
+
+      const locked = await client.query(
+        `SELECT data FROM entities WHERE collection = $1 AND id = $2 FOR UPDATE`,
+        [input.candidateCollection, input.candidateId],
+      );
+      if (!locked.rows[0]) throw new Error('PAYMENT_OWNER_NOT_FOUND');
+      const candidate = locked.rows[0].data;
+      const balances = { sms: 0, wa: 0, ivr: 0, ...(candidate.balances || {}) };
+      for (const channel of ['sms', 'wa', 'ivr'] as const) {
+        const delta = Number(input.credits[channel]);
+        if (!Number.isSafeInteger(delta) || delta < 0) throw new Error('INVALID_PAYMENT_CREDITS');
+        balances[channel] = Number(balances[channel] || 0) + delta;
+      }
+      candidate.balances = balances;
+      candidate.payments = Number(candidate.payments || 0) + input.amount;
+      const updated = await client.query(
+        `UPDATE entities SET data = $3::jsonb, updated_at = now()
+         WHERE collection = $1 AND id = $2 RETURNING data`,
+        [input.candidateCollection, input.candidateId, JSON.stringify(candidate)],
+      );
+      await client.query('COMMIT');
+      return { duplicate: false, candidate: updated.rows[0].data, payment: input.payment };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async remove(collection: string, id: string): Promise<boolean> {
     const res = await this.pool!.query(
       `DELETE FROM entities WHERE collection = $1 AND id = $2`,

@@ -37,4 +37,27 @@ export class BillingService {
     };
     return this.repo.insert(COLLECTION, payment);
   }
+
+  finalizeVerified(input: {
+    ownerId: string;
+    paymentId: string;
+    packageName: string;
+    amount: number;
+    credits: { sms: number; wa: number; ivr: number };
+  }) {
+    const payment: Payment = {
+      id: `RZP-${input.paymentId}`,
+      ownerId: input.ownerId,
+      paymentId: input.paymentId,
+      packageName: input.packageName,
+      amount: input.amount,
+      credits: input.credits,
+      status: 'Success',
+      createdAt: new Date().toISOString(),
+    };
+    return this.repo.finalizePayment({
+      candidateCollection: 'candidates', candidateId: input.ownerId,
+      paymentCollection: COLLECTION, payment, credits: input.credits, amount: input.amount,
+    });
+  }
 }

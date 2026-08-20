@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { candidatesApi } from "@/lib/api";
+import { getSessionToken } from "@/lib/auth-api";
 
 const packages = [
   {
@@ -111,23 +112,13 @@ export default function CustomerBilling() {
     }));
 
     try {
-      const callbackUrl = `${window.location.origin}/customer/billing/callback`;
-
       const res = await fetch("/api/razorpay/create-link", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: selectedPkg.priceNum,
-          description: `Poltica - ${selectedPkg.name} (${selectedPkg.credits})`,
-          notes: {
-            mobile: currentUser.mobile,
-            package: selectedPkg.id,
-            sms: smsAdd.toString(),
-            wa: waAdd.toString(),
-            ivr: ivrAdd.toString(),
-          },
-          callbackUrl,
-        }),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${getSessionToken() || ""}`,
+        },
+        body: JSON.stringify({ packageId: selectedPkg.id }),
       });
 
       const data = await res.json();

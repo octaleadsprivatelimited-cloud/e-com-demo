@@ -6,6 +6,7 @@ import { CheckCircle2, XCircle, Loader2, MessageSquare, MessageCircle, PhoneCall
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { billingApi, candidatesApi } from "@/lib/api";
+import { getSessionToken } from "@/lib/auth-api";
 
 function PaymentCallbackContent() {
   const searchParams = useSearchParams();
@@ -18,6 +19,8 @@ function PaymentCallbackContent() {
     const razorpay_payment_id = searchParams.get("razorpay_payment_id");
     const razorpay_payment_link_status = searchParams.get("razorpay_payment_link_status");
     const razorpay_payment_link_id = searchParams.get("razorpay_payment_link_id");
+    const razorpay_payment_link_reference_id = searchParams.get("razorpay_payment_link_reference_id");
+    const razorpay_signature = searchParams.get("razorpay_signature");
 
     console.log("[Payment Callback] Status:", razorpay_payment_link_status, "ID:", razorpay_payment_id, "Link ID:", razorpay_payment_link_id);
 
@@ -46,33 +49,32 @@ function PaymentCallbackContent() {
           let pkgName = "Credit Pack";
           let successResolving = false;
 
-          // ─── Method A: Fetch link details directly from Razorpay API ───
-          if (razorpay_payment_link_id) {
+          // Verify Razorpay's signed callback and the server-owned package.
+          let grant = "";
+          let grantSignature = "";
+          if (razorpay_payment_link_id && razorpay_payment_link_reference_id && razorpay_signature) {
             try {
-              const res = await fetch(`/api/razorpay/link-details?id=${razorpay_payment_link_id}`);
+              const res = await fetch('/api/razorpay/confirm-link', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getSessionToken() || ''}` },
+                body: JSON.stringify({
+                  paymentLinkId: razorpay_payment_link_id,
+                  referenceId: razorpay_payment_link_reference_id,
+                  status: razorpay_payment_link_status,
+                  paymentId: razorpay_payment_id,
+                  signature: razorpay_signature,
+                }),
+              });
               const json = await res.json();
-              if (json.success && json.data) {
-                const link = json.data;
-                console.log("[Payment Callback] Fetched details from Razorpay:", link);
-
-                // Strictly verify payment status from Razorpay's API server
-                if (link.status === "paid") {
-                  smsAdd = parseInt(link.notes?.sms || "0", 10);
-                  waAdd = parseInt(link.notes?.wa || "0", 10);
-                  ivrAdd = parseInt(link.notes?.ivr || "0", 10);
-                  priceNum = (link.amount || 0) / 100;
-                  mobile = link.notes?.mobile || "";
-
-                  const packageId = link.notes?.package;
-                  if (packageId === "sms_booster") pkgName = "SMS Booster";
-                  else if (packageId === "wa_booster") pkgName = "WhatsApp Booster";
-                  else if (packageId === "ivr_booster") pkgName = "IVR Booster";
-                  else if (packageId === "all_in_one") pkgName = "All One Package";
-
-                  successResolving = true;
-                } else {
-                  console.warn("[Payment Callback] Payment link is not paid. Current status:", link.status);
-                }
+              if (json.success && json.grant && json.signature && json.receipt) {
+                grant = json.grant;
+                grantSignature = json.signature;
+                smsAdd = Number(json.receipt.credits?.sms || 0);
+                waAdd = Number(json.receipt.credits?.wa || 0);
+                ivrAdd = Number(json.receipt.credits?.ivr || 0);
+                priceNum = Number(json.receipt.amount || 0);
+                pkgName = String(json.receipt.packageName || 'Credit Pack');
+                successResolving = true;
               }
             } catch (err) {
               console.error("[Payment Callback] Razorpay Link Fetch failed:", err);
@@ -98,14 +100,7 @@ function PaymentCallbackContent() {
             try { cached = JSON.parse(localStorage.getItem("currentCustomerUser") || "null"); } catch {}
             await candidatesApi.ensure(cached || (mobile ? { mobile } : undefined));
 
-            const res = await billingApi.topup({
-              sms: smsAdd,
-              wa: waAdd,
-              ivr: ivrAdd,
-              amount: priceNum,
-              packageName: pkgName,
-              paymentId: razorpay_payment_id,
-            });
+            const res = await billingApi.topup({ grant, signature: grantSignature });
 
             // Sync the cached session balances from the authoritative response.
             try {

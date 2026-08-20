@@ -45,7 +45,7 @@ type Candidate = {
   name: string;
   district: string;
   area?: string;
-  status: string;
+  status: 'Active' | 'Suspended' | 'Pending';
   balances: { sms: number, ivr: number, wa: number };
   payments: number;
   contacts: number;
@@ -315,7 +315,7 @@ export default function AdminCandidatesPage() {
   const handleToggleStatus = (id: string) => {
     const updated = candidates.map(c => {
       if (c.id === id) {
-        const newStatus = c.status === "Active" ? "Suspended" : "Active";
+        const newStatus: Candidate['status'] = c.status === "Active" ? "Suspended" : "Active";
         
         // Update session user if matching
         const sessionUser = localStorage.getItem("currentCustomerUser");

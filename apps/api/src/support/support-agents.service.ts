@@ -18,17 +18,25 @@ export class SupportAgentsService implements OnModuleInit {
   constructor(private readonly repo: EntityRepository) {}
 
   async onModuleInit(): Promise<void> {
-    // Seed one demo agent if none exist (password: support123 — change it).
-    await this.repo.seedIfEmpty<SupportAgent>(COLLECTION, [
-      {
-        id: 'SUP-001',
-        name: 'Aarti Support',
-        email: 'support@poltica.in',
-        passwordHash: await bcrypt.hash('support123', 10),
-        active: true,
+    // Permanently disable the legacy source-known demo identity if it exists.
+    const legacy = await this.repo.findById<SupportAgent>(COLLECTION, 'SUP-001');
+    if (legacy?.email === 'support@poltica.in') {
+      await this.repo.patch(COLLECTION, legacy.id, { active: false });
+    }
+
+    // Demo provisioning is opt-in, development-only, and requires a secret
+    // supplied outside source control. Production never seeds privileged users.
+    if (process.env.NODE_ENV !== 'production' && process.env.SEED_DEMO_SUPPORT === 'true') {
+      const password = process.env.DEMO_SUPPORT_PASSWORD;
+      if (!password || password.length < 12) {
+        throw new Error('DEMO_SUPPORT_PASSWORD must contain at least 12 characters.');
+      }
+      await this.repo.seedIfEmpty<SupportAgent>(COLLECTION, [{
+        id: 'SUP-DEMO', name: 'Demo Support', email: 'support-demo@poltica.invalid',
+        passwordHash: await bcrypt.hash(password, 12), active: true,
         createdAt: new Date().toISOString(),
-      },
-    ]);
+      }]);
+    }
   }
 
   /** Public listing — never exposes password hashes. */

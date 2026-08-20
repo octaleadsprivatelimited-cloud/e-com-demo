@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { EntityRepository } from '../common/entity.repository';
 
 /**
  * SupportGuard — allows the support desk (role 'support') and admins.
@@ -14,9 +15,12 @@ import { AuthService } from './auth.service';
  */
 @Injectable()
 export class SupportGuard implements CanActivate {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly repo: EntityRepository,
+  ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest();
     const header: string | undefined = req.headers['authorization'];
     if (!header || !header.startsWith('Bearer ')) {
@@ -28,6 +32,14 @@ export class SupportGuard implements CanActivate {
     }
     if (decoded.role !== 'support' && decoded.role !== 'admin') {
       throw new ForbiddenException('Support access required.');
+    }
+    // Privileged support sessions are checked against current account state on
+    // every request, so disabling/removing an agent revokes existing JWTs too.
+    if (decoded.role === 'support') {
+      const agent = await this.repo.findById<{ active: boolean }>('support_agents', decoded.id);
+      if (!agent?.active) {
+        throw new UnauthorizedException('Support account is disabled or no longer exists.');
+      }
     }
     req.user = decoded;
     return true;

@@ -367,7 +367,7 @@ export default function RootAuthPage() {
         area: regArea,
         state: regState,
         pincode: regPincode,
-        status: "Active",
+        status: "Active" as const,
         balances: { sms: smsQty, ivr: ivrQty, wa: waQty },
         payments: finalPrice,
         contacts: population,

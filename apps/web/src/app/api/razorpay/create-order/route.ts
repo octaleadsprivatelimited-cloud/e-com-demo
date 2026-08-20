@@ -3,6 +3,15 @@ import Razorpay from 'razorpay';
 import { getRazorpayKeyId, getRazorpayKeySecret } from '@/lib/razorpay-config';
 
 export async function POST(req: Request) {
+  // Retired: this legacy endpoint accepted arbitrary unauthenticated amounts.
+  // Checkout now uses the authenticated, catalog-bound payment-link route.
+  void req;
+  return NextResponse.json(
+    { success: false, message: 'Use the authenticated payment-link checkout.' },
+    { status: 410 },
+  );
+  /* istanbul ignore next -- retained temporarily for migration history */
+  // eslint-disable-next-line no-unreachable
   try {
     const { amount, receipt, notes } = await req.json();
 
