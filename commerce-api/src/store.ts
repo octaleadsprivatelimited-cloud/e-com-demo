@@ -106,7 +106,7 @@ export class CommerceStore {
     {
       id: string;
       orderId: string;
-      userId: string;
+      userId?: string;
       reason: string;
       status: string;
       createdAt: string;

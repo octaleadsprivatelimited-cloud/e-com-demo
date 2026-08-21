@@ -443,4 +443,17 @@ describe("commerce API", () => {
     });
     expect(r.status).toBe(401);
   });
+  it("deletes the customer identity while retaining detached owner order records", async () => {
+    const customer = store.findUser("ananya@example.com")!;
+    const ownedOrders = [...store.orders.values()].filter(order => order.userId === customer.id);
+    const wrong = await request("/api/v1/account", { method: "DELETE", headers: { authorization: `Bearer ${customerToken}` }, body: JSON.stringify({ confirmation: "delete" }) });
+    expect(wrong.status).toBe(400);
+    const deleted = await request("/api/v1/account", { method: "DELETE", headers: { authorization: `Bearer ${customerToken}` }, body: JSON.stringify({ confirmation: "DELETE" }) });
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.data.retainedOrders).toBe(ownedOrders.length);
+    expect(store.findUser("ananya@example.com")).toBeUndefined();
+    expect(ownedOrders.every(order => store.orders.get(order.id)?.userId === undefined)).toBe(true);
+    const account = await request("/api/v1/auth/me", { headers: { authorization: `Bearer ${customerToken}` } });
+    expect(account.status).toBe(404);
+  });
 });
