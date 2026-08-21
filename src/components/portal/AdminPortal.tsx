@@ -45,6 +45,7 @@ import {
 import { commerceApi } from "@/lib/commerce-api";
 import { toast, Toaster } from "sonner";
 import { useLocation } from "@tanstack/react-router";
+import { defaultStorefrontConfig, type StorefrontConfig } from "@/lib/storefront-config";
 
 const nav: [string, React.ReactNode][] = [
   ["Overview", <LayoutDashboard />],
@@ -727,6 +728,16 @@ function Integrations() {
   );
 }
 
+function WhiteLabelSettings() {
+  const [form,setForm]=useState<StorefrontConfig>(defaultStorefrontConfig),[loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState("");
+  useEffect(()=>{if(!sessionStorage.getItem("commerce_access_token")){setError("Sign in with an administrator account to configure this store.");setLoading(false);return}commerceApi<StorefrontConfig>("/api/v1/admin/storefront-config").then(setForm).catch(reason=>setError(reason instanceof Error?reason.message:"Settings could not be loaded")).finally(()=>setLoading(false))},[]);
+  const field=(key:keyof StorefrontConfig,value:string)=>setForm(current=>({...current,[key]:value}));
+  const save=async()=>{setSaving(true);setError("");try{const saved=await commerceApi<StorefrontConfig>("/api/v1/admin/storefront-config",{method:"PUT",body:JSON.stringify(form)});setForm(saved);toast.success("White-label storefront updated")}catch(reason){const message=reason instanceof Error?reason.message:"Settings could not be saved";setError(message);toast.error(message)}finally{setSaving(false)}};
+  if(loading)return <div className="module-empty"><RefreshCw/><h3>Loading store configuration…</h3></div>;
+  if(error&&!sessionStorage.getItem("commerce_access_token"))return <div className="module-empty"><ShieldCheck/><h3>Administrator sign-in required</h3><p>{error}</p><a className="primary" href="/login">Sign in</a></div>;
+  return <div><div className="editor-top"><div><p className="portal-eyebrow">White-label control centre</p><h2>Store identity & branding</h2><span>Configure the reusable storefront for this customer and domain.</span></div><button className="primary" onClick={save} disabled={saving}><Save/>{saving?"Saving…":"Publish settings"}</button></div>{error&&<p className="settings-error"><AlertTriangle/> {error}</p>}<div className="editor-layout"><div><section className="panel form-panel"><div className="panel-head"><div><h2>Brand identity</h2><p>Customer-facing store and legal details</p></div></div><div className="form-row"><label>Store name<input value={form.storeName} onChange={e=>field("storeName",e.target.value)}/></label><label>Legal business name<input value={form.legalName} onChange={e=>field("legalName",e.target.value)}/></label></div><div className="form-row"><label>Logo URL<input type="url" value={form.logoUrl} onChange={e=>field("logoUrl",e.target.value)} placeholder="https://…"/></label><label>Favicon URL<input type="url" value={form.faviconUrl} onChange={e=>field("faviconUrl",e.target.value)} placeholder="https://…"/></label></div></section><section className="panel form-panel"><div className="panel-head"><div><h2>Contact & messaging</h2><p>Support channels and reusable storefront copy</p></div></div><div className="form-row"><label>Support email<input type="email" value={form.supportEmail} onChange={e=>field("supportEmail",e.target.value)}/></label><label>Support phone<input value={form.supportPhone} onChange={e=>field("supportPhone",e.target.value)}/></label></div><label>Announcement<input value={form.announcement} onChange={e=>field("announcement",e.target.value)}/></label><label>Footer tagline<textarea value={form.footerTagline} onChange={e=>field("footerTagline",e.target.value)}/></label></section><section className="panel form-panel"><div className="panel-head"><div><h2>Search & domain</h2><p>SEO defaults and customer hostname mapping</p></div></div><label>Primary domain<input value={form.primaryDomain} onChange={e=>field("primaryDomain",e.target.value)} placeholder="shop.customer.com"/></label><label>SEO title<input value={form.seoTitle} onChange={e=>field("seoTitle",e.target.value)}/></label><label>SEO description<textarea value={form.seoDescription} onChange={e=>field("seoDescription",e.target.value)}/></label></section></div><aside><section className="panel form-panel sticky"><div className="panel-head"><div><h2>Theme & region</h2><p>Live preview</p></div></div><div className="settings-preview" style={{background:form.backgroundColor,color:form.primaryColor,borderColor:form.accentColor}}><i style={{background:form.accentColor}}>{form.storeName.split(/\s+/).map(x=>x[0]).join("").slice(0,2)}</i><strong>{form.storeName}</strong><small>{form.footerTagline}</small></div>{([['primaryColor','Primary colour'],['accentColor','Accent colour'],['backgroundColor','Background']] as [keyof StorefrontConfig,string][]).map(([key,label])=><label key={key}>{label}<span className="color-field"><input type="color" value={form[key]} onChange={e=>field(key,e.target.value)}/><input value={form[key]} onChange={e=>field(key,e.target.value)}/></span></label>)}<div className="form-row"><label>Currency<select value={form.currency} onChange={e=>field("currency",e.target.value)}><option>INR</option><option>USD</option><option>EUR</option><option>GBP</option><option>AED</option></select></label><label>Locale<select value={form.locale} onChange={e=>field("locale",e.target.value)}><option>en-IN</option><option>en-US</option><option>en-GB</option><option>ar-AE</option></select></label></div></section></aside></div></div>;
+}
+
 export function AdminPortal() {
   const [active, setActive] = useState("Overview");
   const location = useLocation();
@@ -759,6 +770,8 @@ export function AdminPortal() {
           <Integrations />
         ) : active === "Overview" ? (
           <Dashboard />
+        ) : active === "Settings" ? (
+          <WhiteLabelSettings />
         ) : (
           <ModuleView module={active} />
         )}

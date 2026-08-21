@@ -8,6 +8,7 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { StorefrontProvider } from "../lib/storefront-config";
 
 import appCss from "../styles.css?url";
 import fixesCss from "../feature-fixes.css?url";
@@ -114,8 +115,7 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <Outlet />
+      <StorefrontProvider><Outlet /></StorefrontProvider>
     </QueryClientProvider>
   );
 }

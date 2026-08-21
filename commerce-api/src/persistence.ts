@@ -29,6 +29,17 @@ export class PrismaPersistence {
     await this.db.$disconnect();
   }
 
+  async getSetting<T>(key: string): Promise<T | null> {
+    const setting = await this.db.setting.findUnique({ where: { key } });
+    return setting ? (setting.value as T) : null;
+  }
+
+  async saveSetting(key: string, value: Prisma.InputJsonValue) {
+    await this.db.setting.upsert({
+      where: { key }, update: { value }, create: { key, value },
+    });
+  }
+
   async hydrate(store: CommerceStore) {
     const [
       users,

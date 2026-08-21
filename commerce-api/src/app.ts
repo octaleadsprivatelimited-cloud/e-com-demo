@@ -36,6 +36,7 @@ import {
   supportReplySchema,
   supportTicketSchema,
   totpVerifySchema,
+  storefrontConfigSchema,
 } from "./schemas.js";
 import { validate } from "./validate.js";
 import { CommerceStore, seedStore } from "./store.js";
@@ -48,6 +49,7 @@ import {
 import { hashPassword, verifyPassword } from "./passwords.js";
 import { PrismaPersistence } from "./persistence.js";
 import { assertOrderTransition } from "./order-state.js";
+import { defaultStorefrontConfig, normalizeHostname, storefrontSettingKey, type StorefrontConfig } from "./storefront-config.js";
 
 const ok = (
   res: express.Response,
@@ -94,6 +96,7 @@ export async function createApp(overrides?: {
     vault = new SecretVault(config.INTEGRATION_ENCRYPTION_KEY),
     developmentPayments = new DevelopmentPaymentProvider(),
     developmentShipping = new DevelopmentShippingProvider();
+  const developmentStorefronts = new Map<string, StorefrontConfig>();
   if (persistence) {
     await persistence.connect();
     await persistence.hydrate(store);
@@ -228,6 +231,14 @@ export async function createApp(overrides?: {
     },
   );
   app.use(express.json({ limit: "1mb" }));
+  const requestHostname = (req: express.Request) => normalizeHostname(String(req.headers["x-forwarded-host"] || req.headers.host || req.hostname));
+  const readStorefront = async (hostname: string) => {
+    const exactKey = storefrontSettingKey(hostname);
+    const stored = persistence ? await persistence.getSetting<StorefrontConfig>(exactKey) : developmentStorefronts.get(exactKey);
+    const fallback = persistence ? await persistence.getSetting<StorefrontConfig>(storefrontSettingKey("localhost")) : developmentStorefronts.get(storefrontSettingKey("localhost"));
+    return storefrontConfigSchema.parse(stored || fallback || defaultStorefrontConfig);
+  };
+  app.get("/api/v1/storefront/config", async (req, res) => ok(res, await readStorefront(requestHostname(req))));
   app.get("/health", (_req, res) =>
     ok(res, { status: "healthy", time: new Date().toISOString() }),
   );
@@ -445,6 +456,15 @@ export async function createApp(overrides?: {
     return ok(res, { loggedOut: true }, "Logged out");
   });
   const auth = authenticate(config.JWT_SECRET);
+  app.get("/api/v1/admin/storefront-config", auth, authorize("settings:read"), async (req, res) => ok(res, await readStorefront(requestHostname(req))));
+  app.put("/api/v1/admin/storefront-config", auth, authorize("settings:update"), validate(storefrontConfigSchema), async (req, res) => {
+    const value = req.body as StorefrontConfig;
+    const hostname = value.primaryDomain || requestHostname(req);
+    const keys = new Set([storefrontSettingKey(hostname), storefrontSettingKey("localhost")]);
+    for (const key of keys) persistence ? await persistence.saveSetting(key, value) : developmentStorefronts.set(key, value);
+    store.auditLogs.unshift({ id: crypto.randomUUID(), action: "storefront.settings.updated", resource: "Setting", resourceId: hostname, actorId: req.principal!.sub, createdAt: new Date().toISOString() });
+    return ok(res, value, "Storefront configuration saved");
+  });
   app.get("/api/v1/auth/me", auth, (req, res) => {
     const user = store.users.get(req.principal!.sub);
     if (!user) throw new AppError(404, "USER_NOT_FOUND", "User not found");

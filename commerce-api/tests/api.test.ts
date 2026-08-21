@@ -62,6 +62,18 @@ describe("commerce API", () => {
       data: { status: "healthy" },
     });
   });
+  it("serves and securely updates white-label storefront settings", async () => {
+    const initial = await request("/api/v1/storefront/config");
+    expect(initial.body.data.storeName).toBe("Aster & Row");
+    const unauthorized = await request("/api/v1/admin/storefront-config");
+    expect(unauthorized.status).toBe(401);
+    const updated = { ...initial.body.data, storeName: "Customer Store", primaryDomain: "shop.customer.test" };
+    const saved = await request("/api/v1/admin/storefront-config", { method: "PUT", headers: { authorization: `Bearer ${adminToken}` }, body: JSON.stringify(updated) });
+    expect(saved.status).toBe(200);
+    const branded = await request("/api/v1/storefront/config");
+    expect(branded.body.data.storeName).toBe("Customer Store");
+    expect(store.auditLogs.some(log => log.action === "storefront.settings.updated")).toBe(true);
+  });
   it("validates registration and hashes passwords", async () => {
     const bad = await request("/api/v1/auth/register", {
       method: "POST",
