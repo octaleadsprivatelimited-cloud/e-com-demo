@@ -51,6 +51,42 @@ export type StoredShippingSelection = {
   currency: string;
   quotedAt: string;
 };
+export type StoredRefund = {
+  id: string;
+  amount: number;
+  status: "PENDING" | "SUCCEEDED" | "FAILED";
+  reason: string;
+  externalId?: string;
+  idempotencyKey: string;
+  createdAt: string;
+};
+export type StoredShipment = {
+  id: string;
+  provider: string;
+  externalId?: string;
+  awb?: string;
+  courier?: string;
+  trackingUrl?: string;
+  status: string;
+  createdAt: string;
+  events: Array<{
+    status: string;
+    location?: string;
+    occurredAt: string;
+  }>;
+};
+export type StoredPayment = {
+  externalId?: string;
+  clientToken?: string;
+  provider?: string;
+  status?: string;
+  gatewayTransactionId?: string;
+  amount?: number;
+  currency?: string;
+  refundedAmount?: number;
+  refunds?: StoredRefund[];
+  lastError?: { code?: string; description?: string };
+};
 export type StoredOrder = {
   id: string;
   number: string;
@@ -72,6 +108,7 @@ export type StoredOrder = {
   idempotencyKey: string;
   trackingVerificationHash?: string;
   shippingSelection?: StoredShippingSelection;
+  shipment?: StoredShipment;
   invoiceSnapshot?: {
     contact?: { name?: string; email?: string; phone?: string };
     shipping?: {
@@ -83,10 +120,17 @@ export type StoredOrder = {
       country?: string;
     };
     gstin?: string;
+    paymentMethod?: string;
     shippingSelection?: StoredShippingSelection;
   };
-  payment?: { externalId: string; clientToken?: string; provider?:string; status?:string; gatewayTransactionId?:string; lastError?:{code?:string;description?:string} } | null;
-  history: Array<{ from?: string; to: string; at: string; actor?: string }>;
+  payment?: StoredPayment | null;
+  history: Array<{
+    from?: string;
+    to: string;
+    at: string;
+    actor?: string;
+    source?: string;
+  }>;
   createdAt: string;
 };
 export type StoredIntegration = {
@@ -218,7 +262,13 @@ export class CommerceStore {
     assertOrderTransition(order.status, to);
     const from = order.status;
     order.status = to;
-    order.history.push({ from, to, at: new Date().toISOString(), actor });
+    order.history.push({
+      from,
+      to,
+      at: new Date().toISOString(),
+      actor,
+      source,
+    });
     this.auditLogs.push({
       id: crypto.randomUUID(),
       action: "order.status_changed",
@@ -231,6 +281,142 @@ export class CommerceStore {
       createdAt: new Date().toISOString(),
     });
     return order;
+  }
+  beginRefund(
+    orderId: string,
+    amount: number,
+    idempotencyKey: string,
+    reason: string,
+  ) {
+    if (!Number.isFinite(amount) || amount <= 0)
+      throw new AppError(
+        422,
+        "REFUND_AMOUNT_INVALID",
+        "Refund amount must be a finite positive number",
+      );
+    const order = this.orders.get(orderId);
+    if (!order) throw new AppError(404, "ORDER_NOT_FOUND", "Order not found");
+    const payment = order.payment;
+    if (!payment?.externalId)
+      throw new AppError(
+        409,
+        "PAYMENT_NOT_REFUNDABLE",
+        "No captured provider payment is available for refund",
+      );
+    payment.refunds ||= [];
+    const existing = payment.refunds.find(
+      (refund) => refund.idempotencyKey === idempotencyKey,
+    );
+    if (existing) {
+      if (existing.amount !== amount || existing.reason !== reason)
+        throw new AppError(
+          409,
+          "IDEMPOTENCY_CONFLICT",
+          "This idempotency key was already used for a different refund request",
+        );
+      if (existing.status === "SUCCEEDED")
+        return {
+          duplicate: true,
+          process: false,
+          refund: existing,
+          provider: payment.provider || "development",
+          externalId: payment.externalId,
+        };
+      if (existing.status === "PENDING")
+        return {
+          duplicate: true,
+          process: true,
+          refund: existing,
+          provider: payment.provider || "development",
+          externalId: payment.externalId,
+        };
+    }
+    if (!["CAPTURED", "PARTIALLY_REFUNDED"].includes(payment.status || ""))
+      throw new AppError(
+        409,
+        "PAYMENT_NOT_REFUNDABLE",
+        "No captured provider payment is available for refund",
+      );
+    const capturedAmount = payment.amount ?? order.total;
+    const committed = payment.refunds
+      .filter((refund) => ["PENDING", "SUCCEEDED"].includes(refund.status))
+      .reduce((sum, refund) => sum + refund.amount, 0);
+    if (amount > capturedAmount - committed + Number.EPSILON)
+      throw new AppError(
+        422,
+        "REFUND_AMOUNT_INVALID",
+        "Refund exceeds the remaining captured amount",
+      );
+    const refund: StoredRefund = existing || {
+      id: crypto.randomUUID(),
+      amount,
+      status: "PENDING",
+      reason,
+      idempotencyKey,
+      createdAt: new Date().toISOString(),
+    };
+    if (existing) existing.status = "PENDING";
+    else payment.refunds.push(refund);
+    return {
+      duplicate: Boolean(existing),
+      process: true,
+      refund,
+      provider: payment.provider || "development",
+      externalId: payment.externalId,
+    };
+  }
+  completeRefund(
+    orderId: string,
+    refundId: string,
+    externalId: string,
+    actor?: string,
+  ) {
+    const order = this.orders.get(orderId);
+    const payment = order?.payment;
+    const refund = payment?.refunds?.find((item) => item.id === refundId);
+    if (!order || !payment || !refund)
+      throw new AppError(404, "REFUND_NOT_FOUND", "Refund was not found");
+    if (refund.status === "SUCCEEDED") {
+      if (refund.externalId && refund.externalId !== externalId)
+        throw new AppError(
+          409,
+          "REFUND_REFERENCE_CONFLICT",
+          "Refund was already completed with another provider reference",
+        );
+      return refund;
+    }
+    refund.externalId = externalId;
+    refund.status = "SUCCEEDED";
+    const capturedAmount = payment.amount ?? order.total;
+    const refundedAmount = (payment.refunds || [])
+      .filter((item) => item.status === "SUCCEEDED")
+      .reduce((sum, item) => sum + item.amount, 0);
+    payment.refundedAmount = Math.min(capturedAmount, refundedAmount);
+    payment.status =
+      payment.refundedAmount >= capturedAmount
+        ? "REFUNDED"
+        : "PARTIALLY_REFUNDED";
+    this.auditLogs.unshift({
+      id: crypto.randomUUID(),
+      action: "payment.refunded",
+      resource: "refund",
+      resourceId: refund.id,
+      actor,
+      after: {
+        amount: refund.amount,
+        reason: refund.reason,
+        externalId,
+        paymentStatus: payment.status,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    return refund;
+  }
+  failRefund(orderId: string, refundId: string) {
+    const refund = this.orders
+      .get(orderId)
+      ?.payment?.refunds?.find((item) => item.id === refundId);
+    if (refund?.status === "PENDING") refund.status = "FAILED";
   }
   reserveMany(lines: Array<{ variantId: string; quantity: number }>) {
     const totals = new Map<string, number>();

@@ -17,6 +17,109 @@ import type {
 const number = (value: Prisma.Decimal | number) => Number(value);
 const hash = (value: string) =>
   crypto.createHash("sha256").update(value).digest("hex");
+const orderOperationsInclude = {
+  items: true,
+  history: { orderBy: { createdAt: "desc" as const }, take: 200 },
+  payments: {
+    orderBy: { createdAt: "desc" as const },
+    take: 1,
+    include: {
+      refunds: { orderBy: { createdAt: "desc" as const }, take: 100 },
+    },
+  },
+  shipments: {
+    orderBy: { createdAt: "desc" as const },
+    take: 1,
+    include: {
+      events: { orderBy: { occurredAt: "desc" as const }, take: 200 },
+    },
+  },
+} satisfies Prisma.OrderInclude;
+type PersistedOrder = Prisma.OrderGetPayload<{
+  include: typeof orderOperationsInclude;
+}>;
+
+function toStoredOrder(order: PersistedOrder): StoredOrder {
+  const snapshot = order.addressSnapshot as NonNullable<
+    StoredOrder["invoiceSnapshot"]
+  >;
+  const trackingValue = snapshot.contact?.email || snapshot.contact?.phone;
+  const payment = order.payments[0];
+  const refunds = payment?.refunds.slice().reverse().map((refund) => ({
+    id: refund.id,
+    amount: number(refund.amount),
+    status: refund.status as "PENDING" | "SUCCEEDED" | "FAILED",
+    reason: refund.reason || "Not provided",
+    externalId: refund.externalId || undefined,
+    idempotencyKey: refund.idempotencyKey,
+    createdAt: refund.createdAt.toISOString(),
+  }));
+  const shipment = order.shipments[0];
+  return {
+    id: order.id,
+    number: order.number,
+    userId: order.userId || undefined,
+    status: order.status,
+    payment: payment
+      ? {
+          externalId: payment.externalId || undefined,
+          provider: payment.provider,
+          status: payment.status,
+          gatewayTransactionId: payment.gatewayTransactionId || undefined,
+          amount: number(payment.amount),
+          currency: payment.currency,
+          refundedAmount: (refunds || [])
+            .filter((refund) => refund.status === "SUCCEEDED")
+            .reduce((sum, refund) => sum + refund.amount, 0),
+          refunds,
+        }
+      : null,
+    trackingVerificationHash: trackingValue
+      ? hash(trackingValue.trim().toLowerCase())
+      : undefined,
+    shippingSelection: snapshot.shippingSelection,
+    shipment: shipment
+      ? {
+          id: shipment.id,
+          provider: shipment.provider,
+          externalId: shipment.externalId || undefined,
+          awb: shipment.awb || undefined,
+          courier: shipment.courier || undefined,
+          trackingUrl: shipment.trackingUrl || undefined,
+          status: shipment.status,
+          createdAt: shipment.createdAt.toISOString(),
+          events: shipment.events.slice().reverse().map((event) => ({
+            status: event.status,
+            location: event.location || undefined,
+            occurredAt: event.occurredAt.toISOString(),
+          })),
+        }
+      : undefined,
+    invoiceSnapshot: snapshot,
+    lines: order.items.map((item) => ({
+      variantId: item.variantId,
+      name: item.name,
+      sku: item.sku,
+      quantity: item.quantity,
+      unitPrice: number(item.unitPrice),
+      tax: number(item.tax),
+    })),
+    subtotal: number(order.subtotal),
+    tax: number(order.tax),
+    shipping: number(order.shipping),
+    discount: number(order.discount),
+    total: number(order.total),
+    idempotencyKey: order.idempotencyKey,
+    history: order.history.slice().reverse().map((entry) => ({
+      from: entry.fromStatus || undefined,
+      to: entry.toStatus,
+      at: entry.createdAt.toISOString(),
+      actor: entry.actorId || undefined,
+      source: entry.source,
+    })),
+    createdAt: order.createdAt.toISOString(),
+  };
+}
 
 export class PrismaPersistence {
   constructor(readonly db = new PrismaClient()) {}
@@ -73,13 +176,7 @@ export class PrismaPersistence {
           media: { orderBy: { position: "asc" } },
         },
       }),
-      this.db.order.findMany({
-        include: {
-          items: true,
-          history: true,
-          payments: { orderBy: { createdAt: "desc" }, take: 1 },
-        },
-      }),
+      this.db.order.findMany({ include: orderOperationsInclude }),
       this.db.coupon.findMany({
         include: { _count: { select: { orders: true } } },
       }),
@@ -147,53 +244,7 @@ export class PrismaPersistence {
         })),
       });
     }
-    for (const order of orders) {
-      const snapshot = order.addressSnapshot as NonNullable<
-        StoredOrder["invoiceSnapshot"]
-      >;
-      const trackingValue = snapshot.contact?.email || snapshot.contact?.phone;
-      store.orders.set(order.id, {
-        id: order.id,
-        number: order.number,
-        userId: order.userId || undefined,
-        status: order.status,
-        payment: order.payments[0]?.externalId
-          ? {
-              externalId: order.payments[0].externalId,
-              provider: order.payments[0].provider,
-              status: order.payments[0].status,
-              gatewayTransactionId:
-                order.payments[0].gatewayTransactionId || undefined,
-            }
-          : null,
-        trackingVerificationHash: trackingValue
-          ? hash(trackingValue.trim().toLowerCase())
-          : undefined,
-        shippingSelection: snapshot.shippingSelection,
-        invoiceSnapshot: snapshot,
-        lines: order.items.map((item) => ({
-          variantId: item.variantId,
-          name: item.name,
-          sku: item.sku,
-          quantity: item.quantity,
-          unitPrice: number(item.unitPrice),
-          tax: number(item.tax),
-        })),
-        subtotal: number(order.subtotal),
-        tax: number(order.tax),
-        shipping: number(order.shipping),
-        discount: number(order.discount),
-        total: number(order.total),
-        idempotencyKey: order.idempotencyKey,
-        history: order.history.map((entry) => ({
-          from: entry.fromStatus || undefined,
-          to: entry.toStatus,
-          at: entry.createdAt.toISOString(),
-          actor: entry.actorId || undefined,
-        })),
-        createdAt: order.createdAt.toISOString(),
-      });
-    }
+    for (const order of orders) store.orders.set(order.id, toStoredOrder(order));
     for (const coupon of coupons)
       store.coupons.set(coupon.code, {
         code: coupon.code,
@@ -601,6 +652,119 @@ export class PrismaPersistence {
       throw error;
     }
   }
+
+  async refreshOrders(store: CommerceStore) {
+    const orders = await this.db.order.findMany({
+      include: orderOperationsInclude,
+      orderBy: { createdAt: "desc" },
+    });
+    const persistedIds = new Set(orders.map((order) => order.id));
+    for (const id of store.orders.keys())
+      if (!persistedIds.has(id)) store.orders.delete(id);
+    for (const order of orders) store.orders.set(order.id, toStoredOrder(order));
+  }
+
+  async refreshOrder(store: CommerceStore, orderId: string) {
+    const order = await this.db.order.findUnique({
+      where: { id: orderId },
+      include: orderOperationsInclude,
+    });
+    if (!order) {
+      store.orders.delete(orderId);
+      return null;
+    }
+    const stored = toStoredOrder(order);
+    store.orders.set(order.id, stored);
+    return stored;
+  }
+
+  async listAdminOrdersPage(input: {
+    page: number;
+    pageSize: number;
+    search?: string;
+    status?: OrderStatus;
+  }) {
+    const search = input.search?.trim();
+    const where: Prisma.OrderWhereInput = {
+      ...(input.status ? { status: input.status } : {}),
+      ...(search
+        ? {
+            OR: [
+              { number: { contains: search, mode: "insensitive" as const } },
+              {
+                addressSnapshot: {
+                  path: ["contact", "name"],
+                  string_contains: search,
+                },
+              },
+              {
+                addressSnapshot: {
+                  path: ["contact", "email"],
+                  string_contains: search,
+                },
+              },
+              {
+                addressSnapshot: {
+                  path: ["contact", "phone"],
+                  string_contains: search,
+                },
+              },
+              {
+                user: {
+                  is: {
+                    OR: [
+                      { name: { contains: search, mode: "insensitive" as const } },
+                      { email: { contains: search, mode: "insensitive" as const } },
+                      { mobile: { contains: search, mode: "insensitive" as const } },
+                    ],
+                  },
+                },
+              },
+              {
+                items: {
+                  some: {
+                    OR: [
+                      { name: { contains: search, mode: "insensitive" as const } },
+                      { sku: { contains: search, mode: "insensitive" as const } },
+                    ],
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+    const terminalStatuses: OrderStatus[] = ["CANCELLED", "FAILED", "REFUNDED"];
+    const [orders, filteredTotal, totalOrders, activeCount, readyToShip, orderValue] =
+      await this.db.$transaction([
+        this.db.order.findMany({
+          where,
+          include: orderOperationsInclude,
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          skip: (input.page - 1) * input.pageSize,
+          take: input.pageSize,
+        }),
+        this.db.order.count({ where }),
+        this.db.order.count(),
+        this.db.order.count({ where: { status: { notIn: terminalStatuses } } }),
+        this.db.order.count({ where: { status: "PACKED" } }),
+        this.db.order.aggregate({
+          where: { status: { notIn: ["CANCELLED", "FAILED"] } },
+          _sum: { total: true },
+        }),
+      ]);
+    return {
+      orders: orders.map(toStoredOrder),
+      filteredTotal,
+      summary: {
+        totalOrders,
+        activeCount,
+        readyToShip,
+        orderValue: number(orderValue._sum.total || 0),
+        currency: "INR",
+      },
+    };
+  }
   listCustomerReviews(userId: string) {
     return this.db.review.findMany({
       where: { userId },
@@ -831,13 +995,15 @@ export class PrismaPersistence {
   async saveShipment(
     orderId: string,
     provider: string,
-    result: { shipmentId: string; awb: string },
+    result: { shipmentId: string; awb: string; trackingUrl?: string },
   ) {
-    await this.db.shipment.upsert({
+    return this.db.shipment.upsert({
       where: { idempotencyKey: `ship:${orderId}` },
       update: {
+        provider,
         externalId: result.shipmentId,
         awb: result.awb,
+        trackingUrl: result.trackingUrl,
         status: "SHIPPED",
       },
       create: {
@@ -845,6 +1011,7 @@ export class PrismaPersistence {
         provider,
         externalId: result.shipmentId,
         awb: result.awb,
+        trackingUrl: result.trackingUrl,
         status: "SHIPPED",
         idempotencyKey: `ship:${orderId}`,
       },
@@ -862,9 +1029,10 @@ export class PrismaPersistence {
       shippingAddress: {
         ...snapshot.shipping,
         ...snapshot.contact,
-        cod: order.status === "CONFIRMED",
+        cod: String(snapshot.paymentMethod || "").toLowerCase() === "cod",
         weightGrams: 500,
       },
+      orderTotal: { amount: Number(order.total), currency: "INR" },
       items: order.items.map((item) => ({
         name: item.name,
         sku: item.sku,
@@ -1326,15 +1494,135 @@ export class PrismaPersistence {
     });
   }
 
-  async beginRefund(orderId: string, amount: number, idempotencyKey: string) {
+  async beginRefund(
+    orderId: string,
+    amount: number,
+    idempotencyKey: string,
+    reason: string,
+  ) {
+    if (!Number.isFinite(amount) || amount <= 0)
+      throw new AppError(
+        422,
+        "REFUND_AMOUNT_INVALID",
+        "Refund amount must be a finite positive number",
+      );
     return this.db.$transaction(
       async (tx) => {
         const existing = await tx.refund.findUnique({
           where: { idempotencyKey },
         });
-        if (existing) return { duplicate: true, refund: existing };
+        if (existing) {
+          if (
+            Number(existing.amount) !== amount ||
+            (existing.reason !== null && existing.reason !== reason)
+          )
+            throw new AppError(
+              409,
+              "IDEMPOTENCY_CONFLICT",
+              "This idempotency key was already used for a different refund request",
+            );
+          const existingPayment = await tx.payment.findUnique({
+            where: { id: existing.paymentId },
+          });
+          if (!existingPayment || existingPayment.orderId !== orderId)
+            throw new AppError(
+              409,
+              "IDEMPOTENCY_CONFLICT",
+              "This idempotency key belongs to another refund operation",
+            );
+          if (existing.reason === null)
+            await tx.refund.update({
+              where: { id: existing.id },
+              data: { reason },
+            });
+          if (existing.status === "SUCCEEDED")
+            return {
+              duplicate: true,
+              process: false,
+              refund: { ...existing, reason: existing.reason || reason },
+              provider: existingPayment.provider,
+              externalId: existingPayment.externalId,
+            };
+          if (existing.status === "PENDING") {
+            if (!existingPayment.externalId)
+              throw new AppError(
+                409,
+                "PAYMENT_NOT_REFUNDABLE",
+                "No captured provider payment is available for refund",
+              );
+            return {
+              duplicate: true,
+              process: true,
+              refund: { ...existing, reason: existing.reason || reason },
+              provider: existingPayment.provider,
+              externalId: existingPayment.externalId,
+            };
+          }
+          if (
+            existing.status !== "FAILED" ||
+            !existingPayment.externalId ||
+            !["CAPTURED", "PARTIALLY_REFUNDED"].includes(
+              existingPayment.status,
+            )
+          )
+            throw new AppError(
+              409,
+              "PAYMENT_NOT_REFUNDABLE",
+              "No captured provider payment is available for refund",
+            );
+          const committed = await tx.refund.aggregate({
+            where: {
+              paymentId: existingPayment.id,
+              status: { in: ["PENDING", "SUCCEEDED"] },
+            },
+            _sum: { amount: true },
+          });
+          if (
+            amount >
+            Number(existingPayment.amount) -
+              Number(committed._sum.amount || 0)
+          )
+            throw new AppError(
+              422,
+              "REFUND_AMOUNT_INVALID",
+              "Refund exceeds the remaining captured amount",
+            );
+          const reserved = await tx.refund.updateMany({
+            where: { id: existing.id, status: "FAILED" },
+            data: { status: "PENDING", reason },
+          });
+          if (reserved.count !== 1) {
+            const latest = await tx.refund.findUnique({
+              where: { id: existing.id },
+            });
+            if (latest?.status === "SUCCEEDED")
+              return {
+                duplicate: true,
+                process: false,
+                refund: latest,
+                provider: existingPayment.provider,
+                externalId: existingPayment.externalId,
+              };
+            if (latest?.status !== "PENDING")
+              throw new AppError(
+                409,
+                "REFUND_RETRY_CONFLICT",
+                "Refund retry state changed; reload and try again",
+              );
+          }
+          return {
+            duplicate: true,
+            process: true,
+            refund: { ...existing, status: "PENDING", reason },
+            provider: existingPayment.provider,
+            externalId: existingPayment.externalId,
+          };
+        }
         const payment = await tx.payment.findFirst({
-          where: { orderId, status: "CAPTURED" },
+          where: {
+            orderId,
+            status: { in: ["CAPTURED", "PARTIALLY_REFUNDED"] },
+          },
           orderBy: { createdAt: "desc" },
           include: { refunds: true },
         });
@@ -1359,10 +1647,12 @@ export class PrismaPersistence {
             amount,
             status: "PENDING",
             idempotencyKey,
+            reason,
           },
         });
         return {
           duplicate: false,
+          process: true,
           refund,
           provider: payment.provider,
           externalId: payment.externalId,
@@ -1374,20 +1664,68 @@ export class PrismaPersistence {
 
   async completeRefund(id: string, externalId: string, actorId?: string) {
     return this.db.$transaction(async (tx) => {
-      const refund = await tx.refund.update({
-        where: { id },
-        data: { externalId, status: "SUCCEEDED" },
+      const existing = await tx.refund.findUnique({ where: { id } });
+      if (!existing)
+        throw new AppError(404, "REFUND_NOT_FOUND", "Refund was not found");
+      if (
+        existing.status === "SUCCEEDED" &&
+        existing.externalId &&
+        existing.externalId !== externalId
+      )
+        throw new AppError(
+          409,
+          "REFUND_REFERENCE_CONFLICT",
+          "Refund was already completed with another provider reference",
+        );
+      const changed =
+        existing.status === "SUCCEEDED"
+          ? { count: 0 }
+          : await tx.refund.updateMany({
+              where: { id, status: { in: ["PENDING", "FAILED"] } },
+              data: { externalId, status: "SUCCEEDED" },
+            });
+      const refund = await tx.refund.findUnique({ where: { id } });
+      if (!refund || refund.status !== "SUCCEEDED")
+        throw new AppError(
+          409,
+          "REFUND_COMPLETION_CONFLICT",
+          "Refund state changed before completion",
+        );
+      const payment = await tx.payment.findUnique({
+        where: { id: refund.paymentId },
       });
-      await tx.auditLog.create({
-        data: {
-          userId: actorId,
-          action: "payment.refunded",
-          resource: "refund",
-          resourceId: refund.id,
-          after: { amount: Number(refund.amount), externalId },
-        },
+      if (!payment)
+        throw new AppError(404, "PAYMENT_NOT_FOUND", "Payment was not found");
+      const refunded = await tx.refund.aggregate({
+        where: { paymentId: payment.id, status: "SUCCEEDED" },
+        _sum: { amount: true },
       });
-      return refund;
+      const refundedAmount = Number(refunded._sum.amount || 0);
+      const paymentStatus =
+        refundedAmount >= Number(payment.amount)
+          ? "REFUNDED"
+          : "PARTIALLY_REFUNDED";
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: { status: paymentStatus },
+      });
+      if (changed.count === 1)
+        await tx.auditLog.create({
+          data: {
+            userId: actorId,
+            action: "payment.refunded",
+            resource: "refund",
+            resourceId: refund.id,
+            after: {
+              amount: Number(refund.amount),
+              reason: refund.reason,
+              externalId,
+              paymentStatus,
+              refundedAmount,
+            },
+          },
+        });
+      return { refund, paymentStatus, refundedAmount };
     });
   }
 

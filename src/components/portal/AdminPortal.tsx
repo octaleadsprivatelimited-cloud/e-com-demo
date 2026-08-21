@@ -956,11 +956,831 @@ export function AdminPortal() {
           <WhiteLabelSettings />
         ) : active === "Marketing" ? (
           <PromotionStudio />
+        ) : active === "Orders" ? (
+          <AdminOrdersPanel />
         ) : (
           <ModuleView module={active} />
         )}
       </PortalShell>
     </>
+  );
+}
+
+type AdminOrderContact = {
+  id?: string | null;
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+};
+
+type AdminOrderAddress = {
+  line1?: string | null;
+  line2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
+  gstin?: string | null;
+};
+
+type AdminOrderRefund = {
+  id?: string;
+  amount?: number;
+  status?: string;
+  reason?: string;
+  reference?: string | null;
+  createdAt?: string;
+};
+
+type AdminOrderDTO = {
+  id: string;
+  number: string;
+  status: string;
+  createdAt?: string;
+  customer: AdminOrderContact;
+  address: AdminOrderAddress;
+  lineItems: Array<{
+    variantId?: string;
+    name?: string;
+    sku?: string;
+    quantity: number;
+    unitPrice: number;
+    tax?: number;
+    lineSubtotal?: number;
+    lineTotal?: number;
+  }>;
+  totals: {
+    subtotal: number;
+    tax: number;
+    shipping: number;
+    discount: number;
+    total: number;
+    currency: string;
+  };
+  payment: {
+    provider?: string;
+    status?: string;
+    transactionReference?: string | null;
+    amount?: number;
+    currency?: string;
+    refundedAmount: number;
+    refundableAmount: number;
+    refunds: AdminOrderRefund[];
+  };
+  shipping: {
+    selection?: {
+      provider?: string;
+      service?: string;
+      label?: string;
+      etaDays?: number;
+      quotedAmount?: number;
+      chargedAmount?: number;
+      currency?: string;
+      quotedAt?: string;
+    } | null;
+    shipment?: {
+      id?: string;
+      reference?: string | null;
+      provider?: string;
+      courier?: string | null;
+      status?: string;
+      awb?: string | null;
+      trackingUrl?: string | null;
+      createdAt?: string;
+      events?: Array<{
+        status: string;
+        location?: string;
+        occurredAt: string;
+      }>;
+    } | null;
+  };
+  history?: Array<{
+    id?: string;
+    from?: string;
+    to?: string;
+    status?: string;
+    label?: string;
+    source?: string;
+    actor?: string;
+    at?: string;
+    createdAt?: string;
+  }>;
+};
+
+type AdminOrdersResponse = {
+  items: AdminOrderDTO[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+  summary: {
+    totalOrders: number;
+    activeCount: number;
+    readyToShip: number;
+    orderValue: number;
+    currency: string;
+  };
+};
+
+const adminOrderTransitions: Record<string, string[]> = {
+  PENDING: ["CANCELLED"],
+  PAYMENT_PENDING: ["CANCELLED"],
+  PAID: ["CONFIRMED"],
+  CONFIRMED: ["PROCESSING", "CANCELLED"],
+  PROCESSING: ["PACKED", "CANCELLED"],
+  PACKED: [],
+  SHIPPED: ["OUT_FOR_DELIVERY", "DELIVERED"],
+  OUT_FOR_DELIVERY: ["DELIVERED", "SHIPPED"],
+  DELIVERED: ["RETURN_REQUESTED"],
+  RETURN_REQUESTED: ["RETURN_APPROVED"],
+  RETURN_APPROVED: ["RETURNED"],
+  RETURNED: [],
+  REFUND_PENDING: [],
+  FAILED: [],
+};
+
+const adminOrderFilterStatuses = [
+  "PENDING",
+  "PAYMENT_PENDING",
+  "PAID",
+  "CONFIRMED",
+  "PROCESSING",
+  "PACKED",
+  "SHIPPED",
+  "OUT_FOR_DELIVERY",
+  "DELIVERED",
+  "RETURN_REQUESTED",
+  "RETURN_APPROVED",
+  "RETURNED",
+  "REFUND_PENDING",
+  "REFUNDED",
+  "FAILED",
+  "CANCELLED",
+];
+
+const adminOrdersPageSize = 20;
+
+function orderContact(order: AdminOrderDTO) {
+  return order.customer || {};
+}
+
+function orderAddress(order: AdminOrderDTO) {
+  return order.address || {};
+}
+
+function orderRefunds(order: AdminOrderDTO) {
+  return order.payment.refunds || [];
+}
+
+function refundedTotal(order: AdminOrderDTO) {
+  return Number(order.payment.refundedAmount || 0);
+}
+
+function orderStatusLabel(value?: string) {
+  if (!value) return "Not available";
+  return value.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function orderDate(value?: string) {
+  if (!value) return "Not recorded";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function addressText(address: AdminOrderAddress) {
+  return [
+    address.line1,
+    address.line2,
+    address.city,
+    address.state,
+    address.postalCode,
+    address.country,
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+function newOperationKey() {
+  return `admin-${Date.now()}-${crypto.randomUUID()}`;
+}
+
+function AdminOrdersPanel() {
+  const [orders, setOrders] = useState<AdminOrderDTO[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<AdminOrdersResponse["pagination"]>({
+    page: 1,
+    pageSize: adminOrdersPageSize,
+    total: 0,
+    totalPages: 0,
+  });
+  const [summary, setSummary] = useState<AdminOrdersResponse["summary"]>({
+    totalOrders: 0,
+    activeCount: 0,
+    readyToShip: 0,
+    orderValue: 0,
+    currency: "INR",
+  });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [actionSuccess, setActionSuccess] = useState("");
+  const [busyAction, setBusyAction] = useState("");
+  const [refundMode, setRefundMode] = useState<"PARTIAL" | "FULL">("PARTIAL");
+  const [refundAmount, setRefundAmount] = useState("");
+  const [refundReason, setRefundReason] = useState("");
+  const [refundConfirmed, setRefundConfirmed] = useState(false);
+  const [refundKey, setRefundKey] = useState(newOperationKey);
+  const orderRequestSequence = useRef(0);
+
+  const loadOrders = async (preferredId?: string) => {
+    const requestId = ++orderRequestSequence.current;
+    setLoading(true);
+    setLoadError("");
+    try {
+      const query = new URLSearchParams({
+        page: String(page),
+        pageSize: String(adminOrdersPageSize),
+      });
+      if (debouncedSearch) query.set("search", debouncedSearch);
+      if (statusFilter !== "ALL") query.set("status", statusFilter);
+      const response = await commerceApi<AdminOrdersResponse>(
+        `/api/v1/admin/orders?${query.toString()}`,
+      );
+      if (requestId !== orderRequestSequence.current) return;
+
+      const totalPages = Math.max(0, Number(response.pagination.totalPages || 0));
+      if (response.pagination.total > 0 && page > Math.max(1, totalPages)) {
+        setPage(Math.max(1, totalPages));
+        return;
+      }
+
+      setOrders(response.items);
+      setPagination(response.pagination);
+      setSummary(response.summary);
+      setSelectedId((current) => {
+        const wanted = preferredId || current;
+        return response.items.some((order) => order.id === wanted)
+          ? wanted
+          : response.items[0]?.id || "";
+      });
+    } catch (error) {
+      if (requestId !== orderRequestSequence.current) return;
+      setLoadError(error instanceof Error ? error.message : "Orders could not be loaded");
+      setOrders([]);
+      setSelectedId("");
+    } finally {
+      if (requestId === orderRequestSequence.current) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim());
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    void loadOrders();
+    return () => {
+      orderRequestSequence.current += 1;
+    };
+    // loadOrders intentionally reads the current server query state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, page, statusFilter]);
+
+  useEffect(() => {
+    setRefundMode("PARTIAL");
+    setRefundAmount("");
+    setRefundReason("");
+    setRefundConfirmed(false);
+    setRefundKey(newOperationKey());
+    setActionError("");
+    setActionSuccess("");
+  }, [selectedId]);
+
+  const selectedOrder = orders.find((order) => order.id === selectedId);
+  const resultStart = pagination.total
+    ? (pagination.page - 1) * pagination.pageSize + 1
+    : 0;
+  const resultEnd = pagination.total
+    ? Math.min(pagination.page * pagination.pageSize, pagination.total)
+    : 0;
+  const visiblePage = Math.max(1, pagination.page || page);
+  const visibleTotalPages = Math.max(1, pagination.totalPages || 0);
+
+  const runStatusAction = async (status: string) => {
+    if (!selectedOrder) return;
+    const action = `status:${status}`;
+    setBusyAction(action);
+    setActionError("");
+    setActionSuccess("");
+    try {
+      await commerceApi(`/api/v1/admin/orders/${selectedOrder.id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      });
+      const message = `${selectedOrder.number} moved to ${orderStatusLabel(status)}`;
+      setActionSuccess(message);
+      toast.success(message);
+      await loadOrders(selectedOrder.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Order status could not be updated";
+      setActionError(message);
+      toast.error(message);
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const createShipment = async () => {
+    if (!selectedOrder || selectedOrder.status !== "PACKED") return;
+    setBusyAction("shipment");
+    setActionError("");
+    setActionSuccess("");
+    try {
+      await commerceApi(`/api/v1/admin/orders/${selectedOrder.id}/shipment`, {
+        method: "POST",
+        body: JSON.stringify({
+          service: selectedOrder.shipping.selection?.service || "STANDARD",
+        }),
+      });
+      const message = `Shipment created for ${selectedOrder.number}`;
+      setActionSuccess(message);
+      toast.success(message);
+      await loadOrders(selectedOrder.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Shipment could not be created";
+      setActionError(message);
+      toast.error(message);
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const changeRefundForm = (patch: {
+    mode?: "PARTIAL" | "FULL";
+    amount?: string;
+    reason?: string;
+  }) => {
+    if (patch.mode) setRefundMode(patch.mode);
+    if (patch.amount !== undefined) setRefundAmount(patch.amount);
+    if (patch.reason !== undefined) setRefundReason(patch.reason);
+    setRefundConfirmed(false);
+    setRefundKey(newOperationKey());
+    setActionError("");
+    setActionSuccess("");
+  };
+
+  const submitRefund = async () => {
+    if (!selectedOrder) return;
+    const refundable = Math.max(0, selectedOrder.payment.refundableAmount || 0);
+    const amount = refundMode === "FULL" ? refundable : Number(refundAmount);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > refundable) {
+      setActionError(`Enter an amount between ₹0.01 and ${money(refundable)}.`);
+      return;
+    }
+    if (refundReason.trim().length < 3) {
+      setActionError("Add a short reason for the refund.");
+      return;
+    }
+    if (!refundConfirmed) {
+      setActionError("Confirm the refund amount before submitting.");
+      return;
+    }
+    setBusyAction("refund");
+    setActionError("");
+    setActionSuccess("");
+    try {
+      await commerceApi(`/api/v1/admin/orders/${selectedOrder.id}/refunds`, {
+        method: "POST",
+        headers: { "Idempotency-Key": refundKey },
+        body: JSON.stringify({ amount, reason: refundReason.trim() }),
+      });
+      const message = `${money(amount)} refunded for ${selectedOrder.number}`;
+      setActionSuccess(message);
+      toast.success(message);
+      setRefundConfirmed(false);
+      setRefundAmount("");
+      setRefundReason("");
+      setRefundKey(newOperationKey());
+      await loadOrders(selectedOrder.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Refund could not be processed";
+      setActionError(message);
+      toast.error(message);
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  if (loading && !orders.length)
+    return (
+      <div className="module-empty admin-orders-state">
+        <RefreshCw className="spin" />
+        <h3>Loading live orders…</h3>
+        <p>Fetching order, payment and fulfilment details.</p>
+      </div>
+    );
+
+  if (loadError && !orders.length)
+    return (
+      <div className="module-empty admin-orders-state" role="alert">
+        <AlertTriangle />
+        <h3>Orders could not be loaded</h3>
+        <p>{loadError}</p>
+        <div>
+          <button className="primary" type="button" onClick={() => void loadOrders()}>
+            <RefreshCw /> Retry
+          </button>
+          <a className="secondary" href="/login">Sign in</a>
+        </div>
+      </div>
+    );
+
+  if (
+    !orders.length &&
+    !loading &&
+    !search.trim() &&
+    statusFilter === "ALL" &&
+    summary.totalOrders === 0
+  )
+    return (
+      <div className="module-empty admin-orders-state">
+        <ShoppingCart />
+        <h3>No orders yet</h3>
+        <p>Customer orders will appear here automatically after checkout.</p>
+        <a className="secondary" href="/shop">View storefront</a>
+      </div>
+    );
+
+  return (
+    <div className="admin-orders-workspace">
+      <div className="editor-top admin-orders-heading">
+        <div>
+          <p className="portal-eyebrow">Live fulfilment workspace</p>
+          <h2>Orders</h2>
+          <span>Review customers, payments, delivery and refunds from one place.</span>
+        </div>
+        <button
+          className="secondary"
+          type="button"
+          onClick={() => void loadOrders(selectedId)}
+          disabled={loading || Boolean(busyAction)}
+        >
+          <RefreshCw className={loading ? "spin" : ""} /> Refresh
+        </button>
+      </div>
+
+      <div className="admin-order-metrics">
+        <article className="panel"><ShoppingCart /><span><small>Total orders</small><b>{summary.totalOrders}</b></span></article>
+        <article className="panel"><Activity /><span><small>Active</small><b>{summary.activeCount}</b></span></article>
+        <article className="panel"><Package /><span><small>Ready to ship</small><b>{summary.readyToShip}</b></span></article>
+        <article className="panel"><CircleDollarSign /><span><small>Order value</small><b>{money(summary.orderValue)}</b></span></article>
+      </div>
+
+      <section className="panel admin-order-browser">
+        <div className="admin-order-toolbar">
+          <label>
+            <Search />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search order, customer or SKU"
+              aria-label="Search orders"
+            />
+          </label>
+          <select
+            value={statusFilter}
+            onChange={(event) => {
+              setStatusFilter(event.target.value);
+              setPage(1);
+            }}
+            aria-label="Filter orders by status"
+          >
+            <option value="ALL">All statuses</option>
+            {adminOrderFilterStatuses.map((status) => <option key={status} value={status}>{orderStatusLabel(status)}</option>)}
+          </select>
+          <small aria-live="polite">
+            {loading ? "Updating… · " : ""}
+            {pagination.total ? `${resultStart}–${resultEnd} of ${pagination.total}` : "0 orders"}
+          </small>
+        </div>
+
+        <div className="admin-order-layout">
+          <div className="admin-order-list-column">
+            <div className="admin-order-list" aria-label="Order list" aria-busy={loading}>
+              {orders.length ? orders.map((order) => {
+                const contact = orderContact(order);
+                const itemCount = order.lineItems.reduce((total, line) => total + line.quantity, 0);
+                return (
+                  <button
+                    type="button"
+                    className={order.id === selectedId ? "active" : ""}
+                    key={order.id}
+                    onClick={() => setSelectedId(order.id)}
+                    aria-pressed={order.id === selectedId}
+                  >
+                    <span><b>{order.number}</b><small>{orderDate(order.createdAt)}</small></span>
+                    <span><strong>{contact.name || contact.email || "Guest customer"}</strong><small>{itemCount} item{itemCount === 1 ? "" : "s"}</small></span>
+                    <span><b>{money(order.totals.total)}</b><em className={`status ${order.status.toLowerCase()}`}>{orderStatusLabel(order.status)}</em></span>
+                    <ChevronRight />
+                  </button>
+                );
+              }) : (
+                <div className="admin-order-no-results">
+                  <Search />
+                  <b>No matching orders</b>
+                  <small>Clear the search or choose another status.</small>
+                </div>
+              )}
+            </div>
+            <nav className="admin-order-pagination" aria-label="Order list pages">
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={loading || visiblePage <= 1}
+                aria-label="Previous orders page"
+              >
+                Previous
+              </button>
+              <span aria-live="polite">
+                Page {visiblePage} of {visibleTotalPages}
+                <small>{pagination.total ? `${resultStart}–${resultEnd} of ${pagination.total} orders` : "No orders"}</small>
+              </span>
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => setPage((current) => Math.min(visibleTotalPages, current + 1))}
+                disabled={loading || visiblePage >= visibleTotalPages}
+                aria-label="Next orders page"
+              >
+                Next
+              </button>
+            </nav>
+          </div>
+
+          {selectedOrder ? (
+            <AdminOrderDetail
+              order={selectedOrder}
+              busyAction={busyAction}
+              actionError={actionError}
+              actionSuccess={actionSuccess}
+              refundMode={refundMode}
+              refundAmount={refundAmount}
+              refundReason={refundReason}
+              refundConfirmed={refundConfirmed}
+              onStatus={runStatusAction}
+              onShipment={createShipment}
+              onRefundMode={(mode) => changeRefundForm({ mode })}
+              onRefundAmount={(amount) => changeRefundForm({ amount })}
+              onRefundReason={(reason) => changeRefundForm({ reason })}
+              onRefundConfirmed={setRefundConfirmed}
+              onRefund={submitRefund}
+            />
+          ) : (
+            <div className="admin-order-no-selection"><FileText /><p>Select an order to review its details.</p></div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+type AdminOrderDetailProps = {
+  order: AdminOrderDTO;
+  busyAction: string;
+  actionError: string;
+  actionSuccess: string;
+  refundMode: "PARTIAL" | "FULL";
+  refundAmount: string;
+  refundReason: string;
+  refundConfirmed: boolean;
+  onStatus: (status: string) => Promise<void>;
+  onShipment: () => Promise<void>;
+  onRefundMode: (mode: "PARTIAL" | "FULL") => void;
+  onRefundAmount: (amount: string) => void;
+  onRefundReason: (reason: string) => void;
+  onRefundConfirmed: (confirmed: boolean) => void;
+  onRefund: () => Promise<void>;
+};
+
+function AdminOrderDetail({
+  order,
+  busyAction,
+  actionError,
+  actionSuccess,
+  refundMode,
+  refundAmount,
+  refundReason,
+  refundConfirmed,
+  onStatus,
+  onShipment,
+  onRefundMode,
+  onRefundAmount,
+  onRefundReason,
+  onRefundConfirmed,
+  onRefund,
+}: AdminOrderDetailProps) {
+  const contact = orderContact(order);
+  const address = orderAddress(order);
+  const refunds = orderRefunds(order);
+  const refunded = refundedTotal(order);
+  const refundable = Math.max(0, Number(order.payment.refundableAmount || 0));
+  const nextStatuses = adminOrderTransitions[order.status] || [];
+  const paymentReference = order.payment.transactionReference;
+  const shipment = order.shipping.shipment;
+  const shippingSelection = order.shipping.selection;
+  const trackingNumber = shipment?.awb;
+  const canRefund = refundable > 0;
+  const timeline = [
+    ...(order.history || []).map((event, index) => ({
+        id: event.id || `${event.to || event.status}-${index}`,
+        label: event.label || orderStatusLabel(event.to || event.status),
+        description: [event.from ? `From ${orderStatusLabel(event.from)}` : "Order created", event.source, event.actor ? `by ${event.actor}` : ""].filter(Boolean).join(" · "),
+        at: event.at || event.createdAt,
+      })),
+    ...(shipment?.events || []).map((event, index) => ({
+      id: `shipment-${event.status}-${index}`,
+      label: orderStatusLabel(event.status),
+      description: event.location ? `Shipment update · ${event.location}` : "Shipment update",
+      at: event.occurredAt,
+    })),
+    ...refunds.map((refund, index) => ({
+      id: refund.id || `refund-${index}`,
+      label: `${orderStatusLabel(refund.status)} refund · ${money(Number(refund.amount || 0))}`,
+      description: refund.reason || "Refund update",
+      at: refund.createdAt,
+    })),
+  ].sort((left, right) => new Date(left.at || 0).getTime() - new Date(right.at || 0).getTime());
+
+  return (
+    <article className="admin-order-detail">
+      <header>
+        <div>
+          <p className="portal-eyebrow">Order detail</p>
+          <h2>{order.number}</h2>
+          <small>Placed {orderDate(order.createdAt)}</small>
+        </div>
+        <span className={`status ${order.status.toLowerCase()}`}>{orderStatusLabel(order.status)}</span>
+      </header>
+
+      {(actionError || actionSuccess) && (
+        <p className={actionError ? "admin-order-alert error" : "admin-order-alert success"} role={actionError ? "alert" : "status"}>
+          {actionError ? <AlertTriangle /> : <ShieldCheck />}
+          {actionError || actionSuccess}
+        </p>
+      )}
+
+      <section className="admin-order-actions">
+        <div><h3>Next action</h3><p>Only valid transitions for this order are available.</p></div>
+        <div>
+          {nextStatuses.map((status) => (
+            <button
+              className={status === "CANCELLED" || status === "FAILED" ? "secondary danger" : "secondary"}
+              type="button"
+              key={status}
+              disabled={Boolean(busyAction)}
+              onClick={() => void onStatus(status)}
+            >
+              {busyAction === `status:${status}` ? <RefreshCw className="spin" /> : <ChevronRight />}
+              {orderStatusLabel(status)}
+            </button>
+          ))}
+          {order.status === "PACKED" && (
+            <button className="primary" type="button" disabled={Boolean(busyAction)} onClick={() => void onShipment()}>
+              {busyAction === "shipment" ? <RefreshCw className="spin" /> : <Truck />}
+              {busyAction === "shipment" ? "Creating shipment…" : "Create shipment"}
+            </button>
+          )}
+          {!nextStatuses.length && order.status !== "PACKED" && <small>No manual status action is available.</small>}
+        </div>
+      </section>
+
+      <div className="admin-order-info-grid">
+        <section>
+          <h3><Users /> Customer</h3>
+          <b>{contact.name || "Guest customer"}</b>
+          <p>{contact.email || "No email recorded"}</p>
+          <p>{contact.phone || "No mobile recorded"}</p>
+          {address.gstin && <p>GSTIN: {address.gstin}</p>}
+        </section>
+        <section>
+          <h3><Globe2 /> Delivery address</h3>
+          <p>{addressText(address) || "No delivery address recorded"}</p>
+        </section>
+        <section>
+          <h3><CreditCard /> Payment</h3>
+          <b>{orderStatusLabel(order.payment.status || "NOT_RECORDED")}</b>
+          <p>{orderStatusLabel(order.payment.provider || "Provider not recorded")}</p>
+          <p className="admin-order-reference">{paymentReference || "No gateway transaction ID"}</p>
+          <p>{money(Number(order.payment.amount || 0))} {order.payment.currency || order.totals.currency}</p>
+        </section>
+        <section>
+          <h3><Truck /> Shipping</h3>
+          <b>{shipment?.courier || shipment?.provider || shippingSelection?.provider || "Not booked"}</b>
+          <p>{shippingSelection?.label || shippingSelection?.service || "Service not selected"}</p>
+          <p>{trackingNumber ? `Tracking: ${trackingNumber}` : "No tracking number yet"}</p>
+          {shipment?.trackingUrl && <p><a href={shipment.trackingUrl} target="_blank" rel="noreferrer">Open courier tracking</a></p>}
+          {shipment?.status && <span className={`status ${shipment.status.toLowerCase()}`}>{orderStatusLabel(shipment.status)}</span>}
+        </section>
+      </div>
+
+      <section className="admin-order-lines">
+        <div className="admin-order-section-title"><h3>Items</h3><small>{order.lineItems.length} line{order.lineItems.length === 1 ? "" : "s"}</small></div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Product / variant</th><th>SKU</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead>
+            <tbody>
+              {order.lineItems.map((line, index) => (
+                <tr key={line.variantId || `${line.sku}-${index}`}>
+                  <td><b>{line.name || "Product"}</b><small>{line.variantId || "Variant not recorded"}</small></td>
+                  <td>{line.sku || "—"}</td>
+                  <td>{line.quantity}</td>
+                  <td>{money(line.unitPrice)}</td>
+                  <td>{money(Number(line.lineTotal ?? line.unitPrice * line.quantity))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div className="admin-order-lower-grid">
+        <section className="admin-order-totals">
+          <h3>Order totals</h3>
+          <dl>
+            <div><dt>Subtotal</dt><dd>{money(order.totals.subtotal)}</dd></div>
+            <div><dt>GST</dt><dd>{money(Number(order.totals.tax || 0))}</dd></div>
+            <div><dt>Shipping</dt><dd>{money(Number(order.totals.shipping || 0))}</dd></div>
+            <div><dt>Discount</dt><dd>−{money(Number(order.totals.discount || 0))}</dd></div>
+            {refunded > 0 && <div className="refund-row"><dt>Refunded</dt><dd>−{money(refunded)}</dd></div>}
+            <div className="total-row"><dt>Total</dt><dd>{money(order.totals.total)}</dd></div>
+          </dl>
+        </section>
+        <section className="admin-order-timeline">
+          <h3>Timeline</h3>
+          {timeline.length ? timeline.slice().reverse().map((event, index) => (
+            <div key={event.id}>
+              <i className={index === 0 ? "current" : ""}><Activity /></i>
+              <span><b>{event.label}</b>{event.description && <p>{event.description}</p>}<small>{orderDate(event.at)}</small></span>
+            </div>
+          )) : <p className="admin-order-muted">No timeline events recorded.</p>}
+        </section>
+      </div>
+
+      <section className="admin-order-refund">
+        <div className="admin-order-section-title">
+          <div><h3>Refunds</h3><p>Refundable balance: {money(refundable)}</p></div>
+          <RefreshCw />
+        </div>
+        {refunds.length > 0 && (
+          <div className="admin-refund-history">
+            {refunds.map((refund, index) => (
+              <span key={refund.id || index}><b>{money(Number(refund.amount || 0))}</b><small>{orderStatusLabel(refund.status)} · {orderDate(refund.createdAt)}</small></span>
+            ))}
+          </div>
+        )}
+        {canRefund ? (
+          <div className="admin-refund-form">
+            <div className="admin-refund-mode" role="group" aria-label="Refund type">
+              <button type="button" className={refundMode === "PARTIAL" ? "active" : ""} aria-pressed={refundMode === "PARTIAL"} onClick={() => onRefundMode("PARTIAL")}>Partial refund</button>
+              <button type="button" className={refundMode === "FULL" ? "active" : ""} aria-pressed={refundMode === "FULL"} onClick={() => onRefundMode("FULL")}>Full refund</button>
+            </div>
+            <label>
+              Refund amount
+              <span className="admin-refund-amount"><i>₹</i><input type="number" min="0.01" max={refundable} step="0.01" value={refundMode === "FULL" ? refundable : refundAmount} disabled={refundMode === "FULL" || Boolean(busyAction)} onChange={(event) => onRefundAmount(event.target.value)} /></span>
+            </label>
+            <label>
+              Reason
+              <textarea value={refundReason} disabled={Boolean(busyAction)} onChange={(event) => onRefundReason(event.target.value)} placeholder="Reason shown in the refund audit record" />
+            </label>
+            <label className="admin-refund-confirm">
+              <input type="checkbox" checked={refundConfirmed} disabled={Boolean(busyAction)} onChange={(event) => onRefundConfirmed(event.target.checked)} />
+              <span>I confirm this {refundMode.toLowerCase()} refund. This sends money through the payment gateway and cannot be undone here.</span>
+            </label>
+            <button className="primary admin-refund-submit" type="button" disabled={!refundConfirmed || Boolean(busyAction)} onClick={() => void onRefund()}>
+              {busyAction === "refund" ? <RefreshCw className="spin" /> : <CreditCard />}
+              {busyAction === "refund" ? "Processing securely…" : `Refund ${refundMode === "FULL" ? money(refundable) : refundAmount ? money(Number(refundAmount)) : "amount"}`}
+            </button>
+          </div>
+        ) : (
+          <p className="admin-order-muted">{refundable <= 0 ? "This order has been fully refunded." : "A captured online payment is required before a refund can be issued."}</p>
+        )}
+      </section>
+    </article>
   );
 }
 

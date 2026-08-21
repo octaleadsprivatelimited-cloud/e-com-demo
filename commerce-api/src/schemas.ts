@@ -168,7 +168,7 @@ export const returnDecisionSchema = z.object({
   notes: z.string().trim().max(1000).optional(),
 });
 export const refundSchema = z.object({
-  amount: z.number().positive().max(100000000),
+  amount: z.number().positive().max(100000000).multipleOf(0.01),
   reason: z.string().trim().min(3).max(500),
 });
 export const inventoryAdjustmentSchema = z.object({

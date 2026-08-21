@@ -756,6 +756,19 @@ describe("commerce API", () => {
       body: JSON.stringify({ status: "DELIVERED" }),
     });
     expect(invalid.status).toBe(409);
+    const forgedPaid = await request(
+      `/api/v1/admin/orders/${order.id}/status`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ status: "PAID" }),
+      },
+    );
+    expect(forgedPaid.status).toBe(409);
+    expect(forgedPaid.body.error.code).toBe(
+      "PAYMENT_STATE_MANAGED_EXTERNALLY",
+    );
+    expect(store.orders.get(order.id)!.status).toBe("PAYMENT_PENDING");
     process.env.RAZORPAY_WEBHOOK_SECRET = "test-webhook-secret";
     const webhookBody = JSON.stringify({
       type: "payment.captured",
@@ -800,8 +813,307 @@ describe("commerce API", () => {
       },
     );
     expect(shipment.status).toBe(201);
+    expect(shipment.body.data.shipment).toMatchObject({
+      provider: "development",
+      status: "SHIPPED",
+    });
+    expect(shipment.body.data.shipment.awb).toMatch(/^TEST/);
+    expect(shipment.body.data.order.shipping.shipment.awb).toBe(
+      shipment.body.data.shipment.awb,
+    );
     expect(store.orders.get(order.id)!.status).toBe("SHIPPED");
+    expect(store.orders.get(order.id)!.shipment?.awb).toBe(
+      shipment.body.data.shipment.awb,
+    );
     expect(store.auditLogs.length).toBeGreaterThanOrEqual(5);
+  });
+  it("serves private admin order DTOs and processes cumulative idempotent refunds", async () => {
+    const order = [...store.orders.values()].find(
+      (candidate) =>
+        candidate.status === "SHIPPED" &&
+        candidate.payment?.status === "CAPTURED",
+    )!;
+    expect(order).toBeDefined();
+
+    const unauthenticated = await request("/api/v1/admin/orders");
+    expect(unauthenticated.status).toBe(401);
+    const customerDenied = await request("/api/v1/admin/orders", {
+      headers: { authorization: `Bearer ${customerToken}` },
+    });
+    expect(customerDenied.status).toBe(403);
+    const listed = await request("/api/v1/admin/orders", {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(listed.status).toBe(200);
+    expect(listed.body.data.pagination).toMatchObject({
+      page: 1,
+      pageSize: 20,
+    });
+    expect(listed.body.data.pagination.total).toBeGreaterThan(0);
+    expect(listed.body.data.summary).toMatchObject({
+      totalOrders: expect.any(Number),
+      activeCount: expect.any(Number),
+      readyToShip: expect.any(Number),
+      orderValue: expect.any(Number),
+      currency: "INR",
+    });
+    const dto = listed.body.data.items.find((item: any) => item.id === order.id);
+    expect(dto).toMatchObject({
+      number: order.number,
+      customer: {
+        name: "Test Customer",
+        email: "customer@example.com",
+        phone: "+919876543210",
+      },
+      address: {
+        line1: "1 Test Road",
+        city: "Hyderabad",
+        postalCode: "500081",
+      },
+      totals: { total: order.total, currency: "INR" },
+      payment: { status: "CAPTURED", refundedAmount: 0 },
+      shipping: { shipment: { status: "SHIPPED" } },
+    });
+    expect(dto.lineItems[0]).toMatchObject({
+      variantId: order.lines[0]!.variantId,
+      sku: order.lines[0]!.sku,
+    });
+    expect(dto.history.length).toBeGreaterThanOrEqual(5);
+    expect(dto).not.toHaveProperty("idempotencyKey");
+    expect(dto).not.toHaveProperty("trackingVerificationHash");
+    expect(dto.payment).not.toHaveProperty("externalId");
+    expect(JSON.stringify(dto)).not.toContain(order.idempotencyKey);
+    expect(JSON.stringify(dto)).not.toContain("clientToken");
+
+    const pagedSearch = await request(
+      `/api/v1/admin/orders?page=1&pageSize=1&status=SHIPPED&search=${encodeURIComponent(order.number)}`,
+      { headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    expect(pagedSearch.status).toBe(200);
+    expect(pagedSearch.body.data.items).toHaveLength(1);
+    expect(pagedSearch.body.data.items[0].id).toBe(order.id);
+    expect(pagedSearch.body.data.pagination).toMatchObject({
+      page: 1,
+      pageSize: 1,
+      total: 1,
+      totalPages: 1,
+    });
+    const invalidPagination = await request(
+      "/api/v1/admin/orders?pageSize=101",
+      { headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    expect(invalidPagination.status).toBe(400);
+    expect(invalidPagination.body.error.code).toBe("INVALID_PAGINATION");
+    const invalidDeepPage = await request(
+      "/api/v1/admin/orders?page=1001",
+      { headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    expect(invalidDeepPage.status).toBe(400);
+    expect(invalidDeepPage.body.error.code).toBe("INVALID_PAGINATION");
+
+    const codOrder = [...store.orders.values()].find(
+      (candidate) => candidate.payment === null,
+    )!;
+    const codRefund = await request(
+      `/api/v1/admin/orders/${codOrder.id}/refunds`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "idempotency-key": `refund-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({
+          amount: 1,
+          reason: "COD has no captured gateway payment",
+        }),
+      },
+    );
+    expect(codRefund.status).toBe(409);
+    expect(codRefund.body.error.code).toBe("PAYMENT_NOT_REFUNDABLE");
+
+    const pendingVariant = store
+      .listProducts()
+      .find((product) => product.status === "ACTIVE")!.variants[0]!;
+    const pendingCheckout = await request("/api/v1/checkout", {
+      method: "POST",
+      headers: { "idempotency-key": `checkout-${crypto.randomUUID()}` },
+      body: JSON.stringify({
+        lines: [{ variantId: pendingVariant.id, quantity: 1 }],
+        postalCode: "500081",
+        contact: {
+          name: "Pending Customer",
+          email: "pending@example.com",
+          phone: "+919800000001",
+        },
+        shippingAddress: {
+          line1: "2 Test Road",
+          city: "Hyderabad",
+          state: "Telangana",
+          country: "IN",
+        },
+        paymentProvider: "razorpay",
+      }),
+    });
+    expect(pendingCheckout.status).toBe(201);
+    const uncapturedRefund = await request(
+      `/api/v1/admin/orders/${pendingCheckout.body.data.order.id}/refunds`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "idempotency-key": `refund-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({
+          amount: 1,
+          reason: "Gateway payment has not been captured",
+        }),
+      },
+    );
+    expect(uncapturedRefund.status).toBe(409);
+    expect(uncapturedRefund.body.error.code).toBe("PAYMENT_NOT_REFUNDABLE");
+
+    const partialAmount = 100;
+    const refundKey = `refund-${crypto.randomUUID()}`;
+    const partial = await request(
+      `/api/v1/admin/orders/${order.id}/refunds`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "idempotency-key": refundKey,
+        },
+        body: JSON.stringify({
+          amount: partialAmount,
+          reason: "Customer accepted a partial refund",
+        }),
+      },
+    );
+    expect(partial.status).toBe(201);
+    expect(partial.body.data).toMatchObject({
+      refund: {
+        amount: partialAmount,
+        status: "SUCCEEDED",
+        reason: "Customer accepted a partial refund",
+      },
+      payment: {
+        status: "PARTIALLY_REFUNDED",
+        refundedAmount: partialAmount,
+        refundableAmount: order.total - partialAmount,
+      },
+    });
+    expect(partial.body.data.refund.reference).toMatch(/^test_ref_/);
+
+    const duplicate = await request(
+      `/api/v1/admin/orders/${order.id}/refunds`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "idempotency-key": refundKey,
+        },
+        body: JSON.stringify({
+          amount: partialAmount,
+          reason: "Customer accepted a partial refund",
+        }),
+      },
+    );
+    expect(duplicate.status).toBe(200);
+    expect(duplicate.body.data).toEqual(partial.body.data);
+
+    const idempotencyConflict = await request(
+      `/api/v1/admin/orders/${order.id}/refunds`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "idempotency-key": refundKey,
+        },
+        body: JSON.stringify({
+          amount: partialAmount + 1,
+          reason: "Customer accepted a partial refund",
+        }),
+      },
+    );
+    expect(idempotencyConflict.status).toBe(409);
+    expect(idempotencyConflict.body.error.code).toBe("IDEMPOTENCY_CONFLICT");
+
+    const overRefund = await request(
+      `/api/v1/admin/orders/${order.id}/refunds`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "idempotency-key": `refund-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({
+          amount: order.total,
+          reason: "This exceeds the remaining captured amount",
+        }),
+      },
+    );
+    expect(overRefund.status).toBe(422);
+    expect(overRefund.body.error.code).toBe("REFUND_AMOUNT_INVALID");
+
+    const remaining = Math.round((order.total - partialAmount) * 100) / 100;
+    const finalKey = `refund-${crypto.randomUUID()}`;
+    const completed = await request(
+      `/api/v1/admin/orders/${order.id}/refunds`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "idempotency-key": finalKey,
+        },
+        body: JSON.stringify({
+          amount: remaining,
+          reason: "Final refund after returned goods inspection",
+        }),
+      },
+    );
+    expect(completed.status).toBe(201);
+    expect(completed.body.data.payment).toEqual({
+      status: "REFUNDED",
+      refundedAmount: order.total,
+      refundableAmount: 0,
+    });
+
+    const completedDuplicate = await request(
+      `/api/v1/admin/orders/${order.id}/refunds`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "idempotency-key": finalKey,
+        },
+        body: JSON.stringify({
+          amount: remaining,
+          reason: "Final refund after returned goods inspection",
+        }),
+      },
+    );
+    expect(completedDuplicate.status).toBe(200);
+    expect(completedDuplicate.body.data).toEqual(completed.body.data);
+
+    const afterRefund = await request("/api/v1/admin/orders", {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const refundedDto = afterRefund.body.data.items.find(
+      (item: any) => item.id === order.id,
+    );
+    expect(refundedDto.payment.status).toBe("REFUNDED");
+    expect(refundedDto.payment.refunds).toHaveLength(2);
+    expect(refundedDto.payment.refunds.map((item: any) => item.reason)).toEqual([
+      "Customer accepted a partial refund",
+      "Final refund after returned goods inspection",
+    ]);
+    expect(
+      store.auditLogs.some(
+        (entry) =>
+          entry.action === "payment.refunded" &&
+          (entry.after as any)?.reason ===
+            "Final refund after returned goods inspection",
+      ),
+    ).toBe(true);
   });
   it("does not expose tracking details without matching checkout contact", async () => {
     const order = [...store.orders.values()][0]!;

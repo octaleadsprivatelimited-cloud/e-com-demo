@@ -73,6 +73,7 @@ import {
 import { verifyGoogleIdToken } from "./google-auth.js";
 import { convertProductImage, productImageUpload } from "./image-upload.js";
 import { generateInvoicePdf } from "./invoice.js";
+import { adminOrderDto, adminRefundDto } from "./admin-orders.js";
 
 const ok = (
   res: express.Response,
@@ -1830,6 +1831,7 @@ export async function createApp(overrides?: {
               postalCode: req.body.postalCode,
             },
             gstin: req.body.gstin,
+            paymentMethod: req.body.paymentProvider.toLowerCase(),
             shippingSelection,
           },
         });
@@ -1870,6 +1872,10 @@ export async function createApp(overrides?: {
               externalId: `unavailable:${order.id}`,
               provider: req.body.paymentProvider,
               status: "FAILED",
+              amount: order.total,
+              currency: "INR",
+              refundedAmount: 0,
+              refunds: [],
               lastError: {
                 code: paymentFailure.code,
                 description: paymentFailure.message,
@@ -1881,6 +1887,10 @@ export async function createApp(overrides?: {
             ...payment,
             provider: req.body.paymentProvider,
             status: "CREATED",
+            amount: order.total,
+            currency: "INR",
+            refundedAmount: 0,
+            refunds: [],
           };
         else if (isCod) order.payment = null;
         await persistence?.saveOrderAndReservations(
@@ -1897,6 +1907,7 @@ export async function createApp(overrides?: {
             },
             gstin: req.body.gstin,
             deliveryInstructions: req.body.deliveryInstructions,
+            paymentMethod: req.body.paymentProvider.toLowerCase(),
             shippingSelection: order.shippingSelection,
           },
           req.body.paymentProvider,
@@ -2014,6 +2025,10 @@ export async function createApp(overrides?: {
           ...payment,
           provider: req.body.provider,
           status: "CREATED",
+          amount: order.total,
+          currency: "INR",
+          refundedAmount: order.payment?.refundedAmount || 0,
+          refunds: order.payment?.refunds || [],
         };
       order.payment = attempt;
       await persistence?.createPaymentAttempt(
@@ -2098,7 +2113,9 @@ export async function createApp(overrides?: {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .map((order) => {
         const payment = order.payment!;
-        const refundedAmount = payment.status === "REFUNDED" ? order.total : 0;
+        const refundedAmount =
+          payment.refundedAmount ||
+          (payment.status === "REFUNDED" ? order.total : 0);
         return {
           id: `payment:${order.id}`,
           orderId: order.id,
@@ -2111,7 +2128,7 @@ export async function createApp(overrides?: {
           providerReference: payment.externalId,
           transactionId: payment.gatewayTransactionId || null,
           refundedAmount,
-          refunds: [],
+          refunds: (payment.refunds || []).map(adminRefundDto),
           events: payment.lastError
             ? [
                 {
@@ -2297,8 +2314,126 @@ export async function createApp(overrides?: {
       return ok(res, ticket, "Reply added", 201);
     },
   );
-  app.get("/api/v1/admin/orders", auth, authorize("orders:read"), (_req, res) =>
-    ok(res, [...store.orders.values()]),
+  app.get(
+    "/api/v1/admin/orders",
+    auth,
+    authorize("orders:read"),
+    async (req, res) => {
+      const parsePositiveInteger = (
+        value: unknown,
+        fallback: number,
+        maximum: number,
+        name: string,
+      ) => {
+        if (value === undefined) return fallback;
+        const raw = String(value);
+        if (!/^\d+$/.test(raw))
+          throw new AppError(400, "INVALID_PAGINATION", `${name} must be a positive integer`);
+        const parsed = Number(raw);
+        if (parsed < 1 || parsed > maximum)
+          throw new AppError(400, "INVALID_PAGINATION", `${name} must be between 1 and ${maximum}`);
+        return parsed;
+      };
+      const page = parsePositiveInteger(req.query.page, 1, 1_000, "page");
+      const pageSize = parsePositiveInteger(req.query.pageSize, 20, 100, "pageSize");
+      const search = String(req.query.search || "").trim();
+      if (search.length > 120)
+        throw new AppError(400, "INVALID_SEARCH", "Order search cannot exceed 120 characters");
+      const requestedStatus = String(req.query.status || "").trim().toUpperCase();
+      const allowedStatuses = new Set([
+        "PENDING",
+        "PAYMENT_PENDING",
+        "PAID",
+        "CONFIRMED",
+        "PROCESSING",
+        "PACKED",
+        "SHIPPED",
+        "OUT_FOR_DELIVERY",
+        "DELIVERED",
+        "CANCELLED",
+        "RETURN_REQUESTED",
+        "RETURN_APPROVED",
+        "RETURNED",
+        "REFUND_PENDING",
+        "REFUNDED",
+        "FAILED",
+      ]);
+      if (requestedStatus && !allowedStatuses.has(requestedStatus))
+        throw new AppError(400, "INVALID_ORDER_STATUS", "Unknown order status filter");
+
+      const allOrders = persistence ? [] : [...store.orders.values()];
+      const matches = (order: (typeof allOrders)[number]) => {
+        if (requestedStatus && order.status !== requestedStatus) return false;
+        if (!search) return true;
+        const query = search.toLowerCase();
+        const customer = order.userId ? store.users.get(order.userId) : undefined;
+        const contact = order.invoiceSnapshot?.contact;
+        return [
+          order.number,
+          customer?.name,
+          customer?.email,
+          customer?.mobile,
+          contact?.name,
+          contact?.email,
+          contact?.phone,
+          ...order.lines.flatMap((line) => [line.name, line.sku]),
+        ].some((value) => String(value || "").toLowerCase().includes(query));
+      };
+      const memoryFiltered = persistence
+        ? []
+        : allOrders
+            .filter(matches)
+            .sort(
+              (left, right) =>
+                right.createdAt.localeCompare(left.createdAt) ||
+                right.id.localeCompare(left.id),
+            );
+      const persisted = persistence
+        ? await persistence.listAdminOrdersPage({
+            page,
+            pageSize,
+            search: search || undefined,
+            status: requestedStatus
+              ? (requestedStatus as Parameters<PrismaPersistence["listAdminOrdersPage"]>[0]["status"])
+              : undefined,
+          })
+        : null;
+      const selectedOrders = persisted
+        ? persisted.orders
+        : memoryFiltered.slice((page - 1) * pageSize, page * pageSize);
+      for (const order of selectedOrders) store.orders.set(order.id, order);
+      const filteredTotal = persisted?.filteredTotal ?? memoryFiltered.length;
+      const terminalStatuses = new Set(["CANCELLED", "FAILED", "REFUNDED"]);
+      const summary =
+        persisted?.summary ||
+        {
+          totalOrders: allOrders.length,
+          activeCount: allOrders.filter((order) => !terminalStatuses.has(order.status)).length,
+          readyToShip: allOrders.filter((order) => order.status === "PACKED").length,
+          orderValue: allOrders
+            .filter((order) => !["CANCELLED", "FAILED"].includes(order.status))
+            .reduce((total, order) => total + order.total, 0),
+          currency: "INR",
+        };
+      return ok(
+        res,
+        {
+          items: selectedOrders.map((order) =>
+            adminOrderDto(
+              order,
+              order.userId ? store.users.get(order.userId) : undefined,
+            ),
+          ),
+          pagination: {
+            page,
+            pageSize,
+            total: filteredTotal,
+            totalPages: Math.max(1, Math.ceil(filteredTotal / pageSize)),
+          },
+          summary,
+        },
+      );
+    },
   );
   app.get(
     "/api/v1/admin/payments",
@@ -2566,14 +2701,9 @@ export async function createApp(overrides?: {
     authorize("orders:refund"),
     validate(refundSchema),
     async (req, res) => {
-      const order = store.orders.get(String(req.params.id));
+      const orderId = String(req.params.id);
+      const order = store.orders.get(orderId);
       if (!order) throw new AppError(404, "ORDER_NOT_FOUND", "Order not found");
-      if (req.body.amount > order.total)
-        throw new AppError(
-          422,
-          "REFUND_AMOUNT_INVALID",
-          "Refund cannot exceed the order total",
-        );
       const key = String(req.headers["idempotency-key"] || "");
       if (key.length < 8 || key.length > 100)
         throw new AppError(
@@ -2583,38 +2713,95 @@ export async function createApp(overrides?: {
         );
       const operationKey = `refund:${order.id}:${key}`;
       const reservation = persistence
-        ? await persistence.beginRefund(order.id, req.body.amount, operationKey)
-        : {
-            duplicate: false,
-            refund: { id: operationKey, status: "PENDING", externalId: null },
-            provider: "development",
-            externalId: order.id,
-          };
-      if (reservation.duplicate)
-        return ok(res, reservation.refund, "Existing refund returned");
+        ? await persistence.beginRefund(
+            order.id,
+            req.body.amount,
+            operationKey,
+            req.body.reason,
+          )
+        : store.beginRefund(
+            order.id,
+            req.body.amount,
+            operationKey,
+            req.body.reason,
+          );
+      const operationResponse = async () => {
+        await persistence?.refreshOrder(store, orderId);
+        const current = store.orders.get(orderId);
+        if (!current)
+          throw new AppError(404, "ORDER_NOT_FOUND", "Order not found");
+        const dto = adminOrderDto(
+          current,
+          current.userId ? store.users.get(current.userId) : undefined,
+        );
+        const refund = dto.payment.refunds.find(
+          (item) => item.id === reservation.refund.id,
+        );
+        if (!refund)
+          throw new AppError(404, "REFUND_NOT_FOUND", "Refund was not found");
+        return {
+          refund,
+          payment: {
+            status: dto.payment.status,
+            refundedAmount: dto.payment.refundedAmount,
+            refundableAmount: dto.payment.refundableAmount,
+          },
+        };
+      };
+      if (!reservation.process)
+        return ok(res, await operationResponse(), "Existing refund returned");
+      let result: { refundId: string };
       try {
-        const result = await resolvePaymentProvider(
+        result = await resolvePaymentProvider(
           reservation.provider!,
         ).refund({
           paymentId: reservation.externalId!,
           amount: { amount: req.body.amount, currency: "INR" },
           idempotencyKey: operationKey,
         });
-        await persistence?.completeRefund(
+      } catch (error) {
+        const details =
+          error instanceof AppError && error.details
+            ? (error.details as Record<string, unknown>)
+            : {};
+        const definitiveRejection =
+          error instanceof AppError &&
+          (error.code === "PAYMENT_NOT_CONFIGURED" ||
+            (error.code === "PAYMENT_PROVIDER_ERROR" &&
+              details.retryable === false));
+        if (definitiveRejection) {
+          try {
+            if (persistence) await persistence.failRefund(reservation.refund.id);
+            else store.failRefund(order.id, reservation.refund.id);
+          } catch {
+            // Leaving the refund PENDING is safer than releasing its reserved
+            // capacity when failure-state persistence is unavailable.
+          }
+        }
+        // Timeouts, 5xx responses and malformed success responses are
+        // ambiguous: the provider may already have accepted the refund. Keep
+        // the reservation PENDING and retry only with this same operation key.
+        throw error;
+      }
+      if (persistence)
+        await persistence.completeRefund(
           reservation.refund.id,
           result.refundId,
           req.principal!.sub,
         );
-        return ok(
-          res,
-          { ...result, amount: req.body.amount, status: "SUCCEEDED" },
-          "Refund processed",
-          201,
+      else
+        store.completeRefund(
+          order.id,
+          reservation.refund.id,
+          result.refundId,
+          req.principal!.sub,
         );
-      } catch (error) {
-        await persistence?.failRefund(reservation.refund.id);
-        throw error;
-      }
+      return ok(
+        res,
+        await operationResponse(),
+        reservation.duplicate ? "Refund retry processed" : "Refund processed",
+        reservation.duplicate ? 200 : 201,
+      );
     },
   );
   app.patch(
@@ -2626,6 +2813,12 @@ export async function createApp(overrides?: {
       const id = String(req.params.id),
         order = store.orders.get(id);
       if (!order) throw new AppError(404, "ORDER_NOT_FOUND", "Order not found");
+      if (["PAID", "REFUND_PENDING", "REFUNDED"].includes(req.body.status))
+        throw new AppError(
+          409,
+          "PAYMENT_STATE_MANAGED_EXTERNALLY",
+          "Payment and refund states can only be changed by verified payment workflows",
+        );
       assertOrderTransition(order.status, req.body.status);
       await persistence?.transitionOrder(
         id,
@@ -2633,9 +2826,17 @@ export async function createApp(overrides?: {
         req.body.status,
         req.principal!.sub,
       );
+      const updated = store.transitionOrder(
+        id,
+        req.body.status,
+        req.principal!.sub,
+      );
       return ok(
         res,
-        store.transitionOrder(id, req.body.status, req.principal!.sub),
+        adminOrderDto(
+          updated,
+          updated.userId ? store.users.get(updated.userId) : undefined,
+        ),
         "Order status updated",
       );
     },
@@ -2669,7 +2870,7 @@ export async function createApp(overrides?: {
           idempotencyKey: `ship:${order.id}`,
           ...shipmentContext,
         });
-        await persistence?.saveShipment(
+        const persistedShipment = await persistence?.saveShipment(
           order.id,
           selectedShipping.name,
           result,
@@ -2681,13 +2882,38 @@ export async function createApp(overrides?: {
           req.principal!.sub,
           "SHIPPING",
         );
-        store.transitionOrder(
+        order.shipment = {
+          id: persistedShipment?.id || result.shipmentId,
+          provider: selectedShipping.name,
+          externalId: result.shipmentId,
+          awb: result.awb,
+          trackingUrl:
+            "trackingUrl" in result &&
+            typeof result.trackingUrl === "string"
+              ? result.trackingUrl
+              : undefined,
+          status: "SHIPPED",
+          createdAt:
+            persistedShipment?.createdAt.toISOString() ||
+            new Date().toISOString(),
+          events: [],
+        };
+        const updated = store.transitionOrder(
           order.id,
           "SHIPPED",
           req.principal!.sub,
           "SHIPPING",
         );
-        return ok(res, result, "Shipment created", 201);
+        const dto = adminOrderDto(
+          updated,
+          updated.userId ? store.users.get(updated.userId) : undefined,
+        );
+        return ok(
+          res,
+          { shipment: dto.shipping.shipment, order: dto },
+          "Shipment created",
+          201,
+        );
       } catch (error) {
         next(error);
       }

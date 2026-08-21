@@ -193,14 +193,77 @@ paths:
           "201": { description: Created },
           "403": { $ref: "#/components/responses/Error" },
         }
+  /api/v1/admin/orders:
+    get:
+      summary: List sanitized live order-operation records
+      description: Internal idempotency keys, tracking verification hashes, and provider secrets are never returned.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 1000, default: 1 } }
+        - { in: query, name: pageSize, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { in: query, name: search, schema: { type: string, maxLength: 120 } }
+        - { in: query, name: status, schema: { type: string } }
+      responses:
+        {
+          "200": { description: Paginated admin order DTOs with global summary counts },
+          "403": { $ref: "#/components/responses/Error" },
+        }
   /api/v1/admin/orders/{id}/status:
     patch:
-      summary: Apply a validated order state transition
+      summary: Apply a validated non-payment order state transition
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        {
+          required: true,
+          content:
+            {
+              application/json:
+                { schema: { $ref: "#/components/schemas/OrderStatusChange" } },
+            },
+        }
+      responses:
+        {
+          "200": { description: Updated },
+          "409": { $ref: "#/components/responses/Error" },
+        }
+  /api/v1/admin/orders/{id}/refunds:
+    post:
+      summary: Create a cumulative, idempotent partial or full refund
+      security: [{ bearerAuth: [] }]
+      parameters:
+        [
+          { $ref: "#/components/parameters/Id" },
+          {
+            in: header,
+            name: Idempotency-Key,
+            required: true,
+            schema: { type: string, minLength: 8, maxLength: 100 },
+          },
+        ]
+      requestBody:
+        {
+          required: true,
+          content:
+            {
+              application/json:
+                { schema: { $ref: "#/components/schemas/RefundRequest" } },
+            },
+        }
+      responses:
+        {
+          "201": { description: Refund processed },
+          "409": { $ref: "#/components/responses/Error" },
+          "422": { $ref: "#/components/responses/Error" },
+        }
+  /api/v1/admin/orders/{id}/shipment:
+    post:
+      summary: Idempotently create and persist a shipment for a packed order
       security: [{ bearerAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
         {
-          "200": { description: Updated },
+          "201": { description: Shipment and updated sanitized order DTO },
           "409": { $ref: "#/components/responses/Error" },
         }
   /api/v1/admin/integrations:
@@ -327,6 +390,20 @@ components:
         couponCode: { type: string }
         paymentProvider: { type: string }
         shippingService: { type: string, description: Optional delivery service to price }
+    OrderStatusChange:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          description: Payment-authoritative states such as PAID and REFUNDED are rejected here.
+    RefundRequest:
+      type: object
+      required: [amount, reason]
+      properties:
+        amount:
+          { type: number, exclusiveMinimum: 0, multipleOf: 0.01 }
+        reason: { type: string, minLength: 3, maxLength: 500 }
   responses:
     Error:
       description: Standard error envelope

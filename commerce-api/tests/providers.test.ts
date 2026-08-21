@@ -78,10 +78,12 @@ describe("Shiprocket shipping adapter", () => {
           country: "India",
           email: "customer@example.com",
           phone: "+919876543210",
+          cod: true,
         },
         items: [
           { name: "Test product", sku: "SKU-1", quantity: 1, price: 499 },
         ],
+        orderTotal: { amount: 589.75, currency: "INR" },
       }),
     ).resolves.toMatchObject({
       shipmentId: "16016920",
@@ -89,6 +91,11 @@ describe("Shiprocket shipping adapter", () => {
     });
 
     expect(request).toHaveBeenCalledTimes(2);
+    const [, createInit] = request.mock.calls[0]!;
+    expect(JSON.parse(String(createInit?.body))).toMatchObject({
+      payment_method: "COD",
+      sub_total: 589.75,
+    });
     const [assignmentUrl, assignmentInit] = request.mock.calls[1]!;
     expect(assignmentUrl).toBe(
       "https://apiv2.shiprocket.in/v1/external/courier/assign/awb",

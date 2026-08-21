@@ -13,7 +13,7 @@ export const products: Product[] = [
   { id:"p8", name:"Cloud Cotton Throw", category:"Home", price:3990, mrp:4690, rating:4.9, reviews:115, tone:"#d9d1c3", glyph:"≈" },
 ];
 export const categories = [["Home","Quiet forms, natural materials","⌂","#d8cab7"],["Wardrobe","Modern staples, made slowly","◇","#a8ada3"],["Workspace","Tools for focused days","▱","#c8b79f"],["Travel","Ready for the road","▰","#919688"]] as const;
-export const money=(value:number)=>new Intl.NumberFormat("en-IN",{style:"currency",currency:"INR",maximumFractionDigits:0}).format(value);
+export const money=(value:number)=>new Intl.NumberFormat("en-IN",{style:"currency",currency:"INR",maximumFractionDigits:2}).format(value);
 export const productTypeTemplates:Record<ProductType,{label:string;description:string;options:VariantOption[]}>= {
  standard:{label:"Standard item",description:"One SKU without selectable variants",options:[]},
  apparel:{label:"Apparel / Dress",description:"Letter sizing with optional colours",options:[{name:"Size",values:["XS","S","M","L","XL","XXL"]},{name:"Color",values:["Black","White","Navy"]}]},

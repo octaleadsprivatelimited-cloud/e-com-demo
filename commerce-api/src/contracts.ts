@@ -31,6 +31,7 @@ export interface ShippingProvider {
     idempotencyKey: string;
     shippingAddress?: Record<string, unknown>;
     items?: Array<{ name: string; sku: string; quantity: number; price: number }>;
+    orderTotal?: Money;
   }): Promise<{ shipmentId: string; awb: string; trackingUrl?: string }>;
   verifyWebhook(
     raw: Buffer,
