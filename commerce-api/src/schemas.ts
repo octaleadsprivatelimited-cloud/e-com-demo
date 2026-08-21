@@ -176,6 +176,7 @@ export const reviewModerationSchema = z.object({ status: z.enum(["APPROVED", "RE
 export const supportTicketSchema = z.object({ subject: z.string().trim().min(3).max(160), message: z.string().trim().min(5).max(5000), priority: z.enum(["LOW", "NORMAL", "HIGH"]).default("NORMAL") });
 export const supportReplySchema = z.object({ message: z.string().trim().min(1).max(5000), status: z.enum(["OPEN", "WAITING_CUSTOMER", "RESOLVED", "CLOSED"]).optional() });
 export const totpVerifySchema = z.object({ code: z.string().regex(/^\d{6}$/) });
+export const accountDeletionSchema = z.object({ confirmation: z.literal("DELETE") });
 export { storefrontConfigSchema } from "./storefront-config.js";
 export { promotionConfigSchema, recommendationRequestSchema } from "./promotions.js";
 export { paymentClientEventSchema, paymentRetrySchema, paymentReconcileSchema } from "./payment-lifecycle.js";

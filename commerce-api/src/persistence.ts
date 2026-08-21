@@ -220,7 +220,7 @@ export class PrismaPersistence {
       store.returns.set(request.id, {
         id: request.id,
         orderId: request.orderId,
-        userId: request.userId,
+        userId: request.userId || undefined,
         reason: request.reason,
         status: request.status,
         createdAt: request.createdAt.toISOString(),
@@ -237,6 +237,19 @@ export class PrismaPersistence {
         passwordHash: user.passwordHash,
         role: user.role as UserRole,
       },
+    });
+  }
+  async deleteCustomerAccount(userId: string) {
+    return this.db.$transaction(async tx => {
+      const user = await tx.user.findUnique({ where: { id: userId }, select: { role: true } });
+      if (!user) throw new AppError(404, "ACCOUNT_NOT_FOUND", "Account not found");
+      if (user.role !== "CUSTOMER") throw new AppError(403, "CUSTOMER_ACCOUNT_REQUIRED", "Staff accounts cannot be deleted here");
+      const orders = await tx.order.findMany({ where: { userId }, select: { id: true } });
+      const deletedAt = new Date().toISOString();
+      for (const order of orders) await tx.order.update({ where: { id: order.id }, data: { userId: null, addressSnapshot: { redacted: true, deletedAt, retentionReason: "financial_and_fulfilment_record" } } });
+      await tx.auditLog.create({ data: { userId, action: "customer.account_deleted", resource: "user", resourceId: userId, after: { retainedOrders: orders.length, personalDataRedacted: true } } });
+      await tx.user.delete({ where: { id: userId } });
+      return { deleted: true, retainedOrders: orders.length };
     });
   }
   async saveTotp(userId: string, encryptedSecret: string, enabled: boolean) {

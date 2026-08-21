@@ -24,11 +24,25 @@ function Support() {
   return <><form className="panel form-panel" onSubmit={async event => { event.preventDefault(); const data = new FormData(event.currentTarget); try { await commerceApi("/api/v1/account/support", { method: "POST", body: JSON.stringify({ subject: data.get("subject"), message: data.get("message"), priority: "NORMAL" }) }); toast.success("Support ticket created"); event.currentTarget.reset(); setVersion(value => value + 1); } catch (error) { toast.error(error instanceof Error ? error.message : "Ticket could not be created"); } }}><div className="panel-head"><div><h2>Contact care team</h2><p>We keep the complete conversation history</p></div></div><label>Subject<input name="subject" required /></label><label>How can we help?<textarea name="message" required /></label><button className="primary">Create ticket</button></form><Records key={version} endpoint="/api/v1/account/support" empty="No support tickets" /></>;
 }
 
+function ProfileSettings() {
+  const [confirmation, setConfirmation] = useState(""), [busy, setBusy] = useState(false);
+  const removeAccount = async () => {
+    setBusy(true);
+    try {
+      const result = await commerceApi<{ deleted: boolean; retainedOrders: number }>("/api/v1/account", { method: "DELETE", body: JSON.stringify({ confirmation }) });
+      sessionStorage.removeItem("commerce_access_token");
+      toast.success(`Account deleted. ${result.retainedOrders} anonymized order record${result.retainedOrders === 1 ? "" : "s"} retained by the store.`);
+      window.setTimeout(() => { window.location.href = "/"; }, 900);
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Account could not be deleted"); setBusy(false); }
+  };
+  return <section className="panel form-panel account-danger"><div className="panel-head"><div><h2>Delete your account</h2><p>Permanently removes your profile, login, addresses, wishlist and customer-facing history.</p></div></div><div className="deletion-notice"><strong>What the store retains</strong><p>Orders, payment totals, refunds and fulfilment records remain available to the store owner for accounting and legal operations. They are disconnected from your account and delivery/contact details are redacted.</p></div><label>Type DELETE to confirm<input value={confirmation} onChange={event => setConfirmation(event.target.value.toUpperCase())} autoComplete="off" /></label><button className="danger-action" disabled={busy || confirmation !== "DELETE"} onClick={removeAccount}>{busy ? "Deleting permanently…" : "Delete account permanently"}</button></section>;
+}
+
 function Overview() { return <><div className="customer-hero"><div><p className="portal-eyebrow">Aster circle</p><h2>Your account, in one place</h2><p>Orders, returns, saved pieces and support stay synchronized securely.</p><div><i style={{ width: "64%" }} /></div><span>Member</span><span>Next reward</span></div><Gift /></div><div className="customer-stats">{[[<Package />, "Live", "Order tracking"], [<Heart />, "Saved", "Wishlist"], [<Wallet />, money(0), "Store credit"], [<LifeBuoy />, "Fast", "Customer care"]].map(([icon, value, label]) => <article className="panel" key={String(label)}>{icon}<div><b>{value}</b><span>{label}</span></div></article>)}</div><Records endpoint="/api/v1/account/orders" empty="You have not placed an order yet" /></>; }
 
 export function CustomerPortal() {
   const [active, setActive] = useState("My overview");
   useEffect(() => setActive(new URLSearchParams(window.location.search).get("tab") || "My overview"), []);
-  const content = active === "My overview" ? <Overview /> : active === "My orders" ? <Records endpoint="/api/v1/account/orders" empty="No orders yet" /> : active === "Wishlist" ? <Records endpoint="/api/v1/wishlist" empty="Your wishlist is empty" /> : active === "Addresses" ? <Addresses /> : active === "Returns" ? <Records endpoint="/api/v1/account/returns" empty="No return requests" /> : active === "Support" ? <Support /> : <section className="panel module-empty"><h3>{active}</h3><p>This section is ready for your account data and configured providers.</p></section>;
+  const content = active === "My overview" ? <Overview /> : active === "My orders" ? <Records endpoint="/api/v1/account/orders" empty="No orders yet" /> : active === "Wishlist" ? <Records endpoint="/api/v1/wishlist" empty="Your wishlist is empty" /> : active === "Addresses" ? <Addresses /> : active === "Returns" ? <Records endpoint="/api/v1/account/returns" empty="No return requests" /> : active === "Support" ? <Support /> : active === "Profile settings" ? <ProfileSettings /> : <section className="panel module-empty"><h3>{active}</h3><p>This section is ready for your account data and configured providers.</p></section>;
   return <><Toaster richColors /><PortalShell title={active} subtitle="Track orders, manage your details and get help." nav={nav} active={active} onNavigate={setActive}>{content}</PortalShell></>;
 }

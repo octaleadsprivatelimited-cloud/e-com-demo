@@ -315,7 +315,7 @@ model CouponUsage {
   orderId  String   @unique @db.Uuid
   usedAt   DateTime @default(now())
   coupon   Coupon   @relation(fields: [couponId], references: [id])
-  user     User     @relation(fields: [userId], references: [id])
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   order    Order    @relation(fields: [orderId], references: [id])
 
   @@index([couponId, userId])
@@ -337,7 +337,7 @@ model Order {
   idempotencyKey  String          @unique
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
-  user            User?           @relation(fields: [userId], references: [id])
+  user            User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
   coupon          Coupon?         @relation(fields: [couponId], references: [id])
   couponUsage     CouponUsage?
   items           OrderItem[]
@@ -422,14 +422,14 @@ model Refund {
 model ReturnRequest {
   id        String       @id @default(uuid()) @db.Uuid
   orderId   String       @db.Uuid
-  userId    String       @db.Uuid
+  userId    String?      @db.Uuid
   status    String       @default("REQUESTED")
   reason    String
   notes     String?
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
   order     Order        @relation(fields: [orderId], references: [id])
-  user      User         @relation(fields: [userId], references: [id])
+  user      User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
   items     ReturnItem[]
   refund    Refund?
 
@@ -486,7 +486,7 @@ model Review {
   status    String   @default("PENDING")
   createdAt DateTime @default(now())
   product   Product  @relation(fields: [productId], references: [id])
-  user      User     @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([productId, userId])
 }
@@ -503,7 +503,7 @@ model Notification {
   error             String?
   sentAt            DateTime?
   createdAt         DateTime  @default(now())
-  user              User?     @relation(fields: [userId], references: [id])
+  user              User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
 }
@@ -511,13 +511,13 @@ model Notification {
 model SupportTicket {
   id        String           @id @default(uuid()) @db.Uuid
   number    String           @unique
-  userId    String           @db.Uuid
+  userId    String?          @db.Uuid
   subject   String
   status    String           @default("OPEN")
   priority  String           @default("NORMAL")
   createdAt DateTime         @default(now())
   updatedAt DateTime         @updatedAt
-  user      User             @relation(fields: [userId], references: [id])
+  user      User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
   messages  SupportMessage[]
 
   @@index([status, updatedAt])
@@ -531,7 +531,7 @@ model SupportMessage {
   internal  Boolean       @default(false)
   createdAt DateTime      @default(now())
   ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  author    User?         @relation(fields: [authorId], references: [id])
+  author    User?         @relation(fields: [authorId], references: [id], onDelete: SetNull)
 }
 
 model IntegrationConfig {
@@ -581,7 +581,7 @@ model AuditLog {
   before     Json?
   after      Json?
   createdAt  DateTime @default(now())
-  user       User?    @relation(fields: [userId], references: [id])
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([resource, resourceId, createdAt])
 }

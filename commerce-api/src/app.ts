@@ -45,6 +45,7 @@ import {
   paymentClientEventSchema,
   paymentRetrySchema,
   paymentReconcileSchema,
+  accountDeletionSchema,
 } from "./schemas.js";
 import { validate } from "./validate.js";
 import { CommerceStore, seedStore, type StoredUser } from "./store.js";
@@ -501,6 +502,21 @@ export async function createApp(overrides?: {
       email: user.email,
       role: user.role,
     });
+  });
+  app.delete("/api/v1/account", auth, validate(accountDeletionSchema), async (req, res) => {
+    const userId = req.principal!.sub, user = store.users.get(userId);
+    if (!user) throw new AppError(404, "ACCOUNT_NOT_FOUND", "Account not found");
+    if (user.role !== "CUSTOMER") throw new AppError(403, "CUSTOMER_ACCOUNT_REQUIRED", "Staff accounts cannot be deleted here");
+    const retainedOrders = persistence ? (await persistence.deleteCustomerAccount(userId)).retainedOrders : [...store.orders.values()].filter(order => order.userId === userId).length;
+    for (const order of store.orders.values()) if (order.userId === userId) order.userId = undefined;
+    for (const [id, session] of store.sessions) if (session.userId === userId) store.sessions.delete(id);
+    for (const [id, review] of store.reviews) if (review.userId === userId) store.reviews.delete(id);
+    for (const [id, request] of store.returns) if (request.userId === userId) store.returns.delete(id);
+    for (const [id, ticket] of store.supportTickets) if (ticket.userId === userId) store.supportTickets.delete(id);
+    store.addresses.delete(userId); store.wishlists.delete(userId); store.carts.delete(`user:${userId}`); store.users.delete(userId);
+    store.auditLogs.unshift({ id: crypto.randomUUID(), action: "customer.account_deleted", resource: "user", resourceId: userId, retainedOrders, personalDataRedacted: true, createdAt: new Date().toISOString() });
+    res.clearCookie("refresh_token", { path: "/api/v1/auth" });
+    return ok(res, { deleted: true, retainedOrders }, "Your account and personal data were deleted. Anonymized transaction records remain with the store owner.");
   });
   app.post("/api/v1/auth/admin-2fa/setup", auth, async (req, res) => {
     const user = store.users.get(req.principal!.sub);
