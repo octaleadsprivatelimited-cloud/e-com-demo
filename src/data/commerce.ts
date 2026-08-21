@@ -1,7 +1,7 @@
 export type VariantOption={name:string;values:string[]};
 export type Variant={id:string;sku:string;options:Record<string,string>;price:number;stock:number};
 export type ProductType="standard"|"apparel"|"footwear"|"grocery"|"pack"|"custom";
-export type Product = { id:string; name:string; category:string; price:number; mrp:number; rating:number; reviews:number; badge?:string; tone:string; glyph:string;productType?:ProductType;options?:VariantOption[];variants?:Variant[] };
+export type Product = { id:string; name:string; category:string; price:number; mrp:number; rating:number; reviews:number; badge?:string; tone:string; glyph:string;image?:string;imageAlt?:string;productType?:ProductType;options?:VariantOption[];variants?:Variant[] };
 export const products: Product[] = [
   { id:"p1", name:"Arc Linen Lounge Chair", category:"Home", price:18490, mrp:21990, rating:4.9, reviews:128, badge:"Bestseller", tone:"#d7c5ac", glyph:"◒" },
   { id:"p2", name:"Form No. 03 Table Lamp", category:"Lighting", price:7490, mrp:8990, rating:4.8, reviews:84, badge:"New", tone:"#c4c7b6", glyph:"◐" },
