@@ -11,6 +11,8 @@ const schema = z.object({
   CORS_ORIGINS: z.string().default("http://localhost:5173"),
   USE_DATABASE: z.enum(["true", "false"]).default("false").transform(value => value === "true"),
   GOOGLE_CLIENT_ID: z.string().default(""),
+  UPLOAD_DIR: z.string().default("uploads"),
+  PUBLIC_UPLOAD_BASE_URL: z.string().url().default("http://localhost:4000/uploads"),
 });
 export type AppConfig = z.infer<typeof schema>;
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {

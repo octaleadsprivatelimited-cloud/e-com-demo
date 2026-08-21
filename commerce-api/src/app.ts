@@ -60,6 +60,7 @@ import { assertOrderTransition } from "./order-state.js";
 import { defaultStorefrontConfig, normalizeHostname, storefrontSettingKey, type StorefrontConfig } from "./storefront-config.js";
 import { activeCampaign, defaultPromotionConfig, type PromotionConfig } from "./promotions.js";
 import { verifyGoogleIdToken } from "./google-auth.js";
+import {convertProductImage,productImageUpload} from "./image-upload.js";
 
 const ok = (
   res: express.Response,
@@ -244,6 +245,7 @@ export async function createApp(overrides?: {
     },
   );
   app.use(express.json({ limit: "1mb" }));
+  app.use("/uploads",express.static(config.UPLOAD_DIR,{fallthrough:false,immutable:true,maxAge:"1y",dotfiles:"deny",index:false}));
   const requestHostname = (req: express.Request) => normalizeHostname(String(req.headers["x-forwarded-host"] || req.headers.host || req.hostname));
   const readStorefront = async (hostname: string) => {
     const exactKey = storefrontSettingKey(hostname);
@@ -578,6 +580,7 @@ export async function createApp(overrides?: {
       return ok(res, product, "Product created", 201);
     },
   );
+  app.post("/api/v1/admin/products/:id/media/upload",auth,authorize("products:update"),productImageUpload,async(req,res)=>{const product=store.getProduct(String(req.params.id));if(!req.file)throw new AppError(400,"IMAGE_REQUIRED","Choose an image to upload");const converted=await convertProductImage(req.file.buffer,config.UPLOAD_DIR,config.PUBLIC_UPLOAD_BASE_URL),media={id:crypto.randomUUID(),url:converted.url,alt:String(req.body.alt||product.name).trim().slice(0,200)||product.name,type:"IMAGE" as const,position:Number.isFinite(Number(req.body.position))?Math.max(0,Math.min(1000,Number(req.body.position))):product.media.length};product.media.push(media);product.media.sort((a,b)=>a.position-b.position);await persistence?.addProductMedia({id:media.id,productId:product.id,url:media.url,alt:media.alt,position:media.position});return ok(res,{media,...converted},"Image converted to WebP and attached",201)});
   app.put(
     "/api/v1/admin/products/:id",
     auth,

@@ -23,7 +23,7 @@ export async function commerceApi<T>(path: string, init: RequestInit = {}) {
     ...init,
     credentials: "include",
     headers: {
-      "content-type": "application/json",
+      ...(!(typeof FormData !== "undefined" && init.body instanceof FormData) ? { "content-type": "application/json" } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...init.headers,
     },

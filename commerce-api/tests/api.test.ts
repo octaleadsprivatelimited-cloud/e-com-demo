@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import path from "node:path";import os from "node:os";import {mkdtemp,rm} from "node:fs/promises";import sharp from "sharp";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
@@ -14,7 +15,10 @@ const config: AppConfig = {
   CORS_ORIGINS: "http://localhost:5173",
   USE_DATABASE: false,
   GOOGLE_CLIENT_ID: "test-google-client.apps.googleusercontent.com",
+  UPLOAD_DIR: "",
+  PUBLIC_UPLOAD_BASE_URL: "http://localhost:4001/uploads",
 };
+let uploadDirectory="";
 let server: Server,
   base: string,
   store: CommerceStore,
@@ -32,6 +36,7 @@ async function request(path: string, init: RequestInit = {}) {
   };
 }
 beforeAll(async () => {
+  uploadDirectory=await mkdtemp(path.join(os.tmpdir(),"commerce-upload-"));config.UPLOAD_DIR=uploadDirectory;
   store = new CommerceStore();
   const created = await createApp({ config, store, googleVerifier: async () => ({sub:"google-customer-1",email:"google.customer@example.com",email_verified:true,name:"Google Customer",aud:config.GOOGLE_CLIENT_ID,iss:"https://accounts.google.com",exp:Math.floor(Date.now()/1000)+3600}) });
   server = created.app.listen(0);
@@ -48,12 +53,7 @@ beforeAll(async () => {
   });
   adminToken = login.body.data.accessToken;
 });
-afterAll(
-  () =>
-    new Promise<void>((resolve, reject) =>
-      server.close((e) => (e ? reject(e) : resolve())),
-    ),
-);
+afterAll(async()=>{await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));await rm(uploadDirectory,{recursive:true,force:true})});
 describe("commerce API", () => {
   it("reports health without leaking internals", async () => {
     const r = await request("/health");
@@ -202,6 +202,7 @@ describe("commerce API", () => {
     );
     expect(archived.body.data.status).toBe("ARCHIVED");
   });
+  it("converts uploaded product images to optimized WebP and rejects invalid files",async()=>{const product=store.listProducts()[0]!,image=await sharp({create:{width:120,height:80,channels:3,background:"#b96849"}}).png().toBuffer(),form=new FormData();form.append("image",new Blob([image],{type:"image/png"}),"product.png");form.append("alt","Product view");const response=await fetch(`${base}/api/v1/admin/products/${product.id}/media/upload`,{method:"POST",headers:{authorization:`Bearer ${adminToken}`},body:form}),body=await response.json() as any;expect(response.status).toBe(201);expect(body.data.media.url).toMatch(/\.webp$/);expect(body.data.format).toBe("webp");expect(body.data.bytes).toBeLessThan(image.length);const bad=new FormData();bad.append("image",new Blob(["not-an-image"],{type:"text/plain"}),"bad.txt");const rejected=await fetch(`${base}/api/v1/admin/products/${product.id}/media/upload`,{method:"POST",headers:{authorization:`Bearer ${adminToken}`},body:bad});expect(rejected.status).toBe(415)});
   it("persists guest carts and authenticated wishlists", async () => {
     const product = store.listProducts()[0]!,
       variant = product.variants[0]!;

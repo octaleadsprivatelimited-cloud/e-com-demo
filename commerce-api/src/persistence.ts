@@ -387,6 +387,8 @@ export class PrismaPersistence {
     });
   }
 
+  async addProductMedia(input:{id:string;productId:string;url:string;alt:string;position:number}){return this.db.productMedia.create({data:{...input,type:"IMAGE"}})}
+
   async archiveProduct(id: string) {
     await this.db.product.update({
       where: { id },

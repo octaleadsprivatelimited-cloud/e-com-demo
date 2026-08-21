@@ -19,5 +19,6 @@ out/
 .wrangler/
 commerce-api/node_modules/
 commerce-api/dist/
+commerce-api/uploads/
 .tanstack/
 *.tsbuildinfo

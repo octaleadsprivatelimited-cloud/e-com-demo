@@ -299,6 +299,7 @@ function VariantEditor() {
     );
   const [basePrice, setBasePrice] = useState(6290),
     [saving, setSaving] = useState(false);
+  const [imageFiles,setImageFiles]=useState<File[]>([]),[uploadProgress,setUploadProgress]=useState("");
   const [description, setDescription] = useState("A versatile everyday piece made from breathable European linen."),
     [mediaUrls, setMediaUrls] = useState(""),
     [specifications, setSpecifications] = useState("Material: European linen\nCare: Gentle wash"),
@@ -356,7 +357,7 @@ function VariantEditor() {
             : type === "apparel"
               ? "Wardrobe"
               : "Home";
-      await commerceApi("/api/v1/admin/products", {
+      const created=await commerceApi<{id:string}>("/api/v1/admin/products", {
         method: "POST",
         body: JSON.stringify({
           name,
@@ -388,6 +389,8 @@ function VariantEditor() {
           })),
         }),
       });
+      for(let index=0;index<imageFiles.length;index++){setUploadProgress(`Converting image ${index+1} of ${imageFiles.length}…`);const body=new FormData();body.append("image",imageFiles[index]!);body.append("alt",`${name} product image ${index+1}`);body.append("position",String(index));await commerceApi(`/api/v1/admin/products/${created.id}/media/upload`,{method:"POST",body})}
+      setUploadProgress("");setImageFiles([]);
       toast.success("Product and all variants were saved");
     } catch (error) {
       toast.error(
@@ -454,6 +457,8 @@ function VariantEditor() {
           </section>
           <section className="panel form-panel">
             <div className="panel-head"><div><h2>Media & product details</h2><p>One secure hosted image URL or specification per line</p></div></div>
+            <label className="image-upload-zone">Upload product images<input type="file" accept="image/jpeg,image/png,image/webp,image/avif,image/heic" multiple onChange={event=>setImageFiles(Array.from(event.target.files||[]).slice(0,8))}/><span>{imageFiles.length ? `${imageFiles.length} image${imageFiles.length===1?"":"s"} ready — converted to WebP on save` : "JPEG, PNG, WebP, AVIF or HEIC · maximum 10 MB each"}</span></label>
+            {uploadProgress&&<p className="upload-progress"><RefreshCw/>{uploadProgress}</p>}
             <label>Image URLs<textarea value={mediaUrls} onChange={(event) => setMediaUrls(event.target.value)} placeholder="https://cdn.example.com/product-front.webp" /></label>
             <label>Specifications<textarea value={specifications} onChange={(event) => setSpecifications(event.target.value)} placeholder="Material: Linen&#10;Country of origin: India" /></label>
           </section>
