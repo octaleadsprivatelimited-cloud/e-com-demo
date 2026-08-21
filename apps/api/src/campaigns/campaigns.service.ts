@@ -14,6 +14,7 @@ export interface Campaign {
   status: 'Sent' | 'Queued' | 'Failed' | 'Scheduled';
   stats: { delivered: number; failed: number; pending: number };
   createdAt: string;
+  language?: 'en' | 'te' | 'hi';
 }
 
 const COLLECTION = 'campaigns';
@@ -40,6 +41,7 @@ export class CampaignsService {
     recipientCount: number;
     creditsUsed: number;
     status?: Campaign['status'];
+    language?: Campaign['language'];
   }): Promise<Campaign> {
     const status = input.status || 'Sent';
     // Simulate realistic delivery outcomes for sent campaigns.
@@ -57,6 +59,7 @@ export class CampaignsService {
       status,
       stats: { delivered, failed, pending },
       createdAt: new Date().toISOString(),
+      language: input.language,
     };
     return this.repo.insert(COLLECTION, campaign);
   }

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { MessageCircle, Send, CalendarClock, BookTemplate, Info, Loader2, CheckCircle2, AlertCircle, Clock, Image, Link2, PlusCircle } from "lucide-react";
+import { MessageCircle, Send, CalendarClock, BookTemplate, Info, Loader2, CheckCircle2, AlertCircle, Image, Link2, Languages } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,14 +36,36 @@ const isValidHttpUrl = (str: string) => {
   return url.protocol === "http:" || url.protocol === "https:";
 };
 
+const WHATSAPP_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "te", label: "తెలుగు" },
+  { code: "hi", label: "हिंदी" },
+] as const;
+
+type WhatsAppLanguage = typeof WHATSAPP_LANGUAGES[number]["code"];
+
+const TEMPLATE_COPY = {
+  welcome: {
+    en: { message: "Namaskar Voter! Support our vision for a progressive future. Candidate *[Candidate Name]* invites you to our upcoming town hall.\n\nDate: [Date]\nTime: [Time]\nVenue: [Location]\n\nUse the button below to RSVP.", button: "Register RSVP" },
+    te: { message: "నమస్కారం ఓటరు! ప్రగతిశీల భవిష్యత్తు కోసం మా దృక్పథానికి మద్దతు ఇవ్వండి. అభ్యర్థి *[Candidate Name]* మిమ్మల్ని రాబోయే ప్రజా సమావేశానికి ఆహ్వానిస్తున్నారు.\n\nతేదీ: [Date]\nసమయం: [Time]\nవేదిక: [Location]\n\nహాజరు నమోదు కోసం క్రింది బటన్‌ను నొక్కండి.", button: "హాజరు నమోదు" },
+    hi: { message: "नमस्कार मतदाता! प्रगतिशील भविष्य के हमारे संकल्प का समर्थन करें। उम्मीदवार *[Candidate Name]* आपको आगामी जनसभा में आमंत्रित करते हैं।\n\nदिनांक: [Date]\nसमय: [Time]\nस्थान: [Location]\n\nउपस्थिति दर्ज करने के लिए नीचे दिए बटन को दबाएँ।", button: "उपस्थिति दर्ज करें" },
+  },
+  appeal: {
+    en: { message: "Dear citizen, your vote is your power! Vote for progress, transparency and development on *[Date]* and support *[Candidate Name]*. Use the button below to view our manifesto.", button: "View Manifesto" },
+    te: { message: "ప్రియమైన పౌరుడా, మీ ఓటే మీ శక్తి! *[Date]* నాడు ప్రగతి, పారదర్శకత మరియు అభివృద్ధి కోసం ఓటు వేసి *[Candidate Name]* కు మద్దతు ఇవ్వండి. మా మేనిఫెస్టో చూడటానికి క్రింది బటన్‌ను నొక్కండి.", button: "మేనిఫెస్టో చూడండి" },
+    hi: { message: "प्रिय नागरिक, आपका वोट आपकी शक्ति है! *[Date]* को प्रगति, पारदर्शिता और विकास के लिए मतदान करें तथा *[Candidate Name]* का समर्थन करें। हमारा घोषणापत्र देखने के लिए नीचे दिए बटन को दबाएँ।", button: "घोषणापत्र देखें" },
+  },
+} as const;
+
 export default function CustomerWhatsApp() {
   const [campaignName, setCampaignName] = useState("");
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState<string>(TEMPLATE_COPY.welcome.en.message);
   const [mediaUrl, setMediaUrl] = useState("");
   const [imageError, setImageError] = useState(false);
   const [audience, setAudience] = useState("all");
   const [templateMode, setTemplateMode] = useState("welcome");
-  const [buttonText, setButtonText] = useState("Join Rally Now");
+  const [buttonText, setButtonText] = useState<string>(TEMPLATE_COPY.welcome.en.button);
+  const [language, setLanguage] = useState<WhatsAppLanguage>("en");
   
   // Modals and logic state
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
@@ -89,6 +111,9 @@ export default function CustomerWhatsApp() {
         if (parsed.name) setCandidateName(parsed.name);
         if (parsed.apiConfig) setApiConfig(parsed.apiConfig);
         if (parsed.balances?.wa !== undefined) setAvailableCredits(parsed.balances.wa);
+        if (["en", "te", "hi"].includes(parsed.defaultLanguage)) {
+          setLanguage(parsed.defaultLanguage);
+        }
         setManifestoUrl(parsed.manifestoUrl || "");
         setBrochureUrl(parsed.brochureUrl || "");
         setUniqueUrl(parsed.uniqueUrl || "");
@@ -99,6 +124,9 @@ export default function CustomerWhatsApp() {
     try {
       const me = await candidatesApi.me();
       if (me.balances?.wa !== undefined) setAvailableCredits(me.balances.wa);
+      if (["en", "te", "hi"].includes((me as any).defaultLanguage)) {
+        setLanguage((me as any).defaultLanguage);
+      }
       if ((me as any).apiConfig) setApiConfig((me as any).apiConfig);
       if (me.manifestoUrl !== undefined) setManifestoUrl(me.manifestoUrl || "");
       if (me.uniqueUrl !== undefined) setUniqueUrl(me.uniqueUrl || "");
@@ -142,27 +170,29 @@ export default function CustomerWhatsApp() {
       .replace(/\[Symbol\]/g, "Lotus");
 
     if (attachManifesto && manifestoUrl) {
-      txt += `\n\n📄 *Manifesto PDF*: ${manifestoUrl}`;
+      const label = language === "te" ? "మేనిఫెస్టో PDF" : language === "hi" ? "घोषणापत्र PDF" : "Manifesto PDF";
+      txt += `\n\n📄 *${label}*: ${manifestoUrl}`;
     }
     if (attachUniqueUrl && uniqueUrl) {
-      txt += `\n\n🌐 *Campaign URL*: https://${uniqueUrl}`;
+      const label = language === "te" ? "ప్రచార లింక్" : language === "hi" ? "अभियान लिंक" : "Campaign URL";
+      txt += `\n\n🌐 *${label}*: https://${uniqueUrl}`;
     }
     return txt;
   };
 
-  const handleTemplateSelect = (val: string) => {
+  const handleTemplateSelect = (val: string, selectedLanguage: WhatsAppLanguage = language) => {
     setTemplateMode(val);
     setImageError(false);
     if(val === "welcome") {
       setMediaUrl("https://images.unsplash.com/photo-1540575467063-178a50c2df87?w=600&auto=format&fit=crop&q=60");
-      setMessage("Namaskar Voter! Support our vision for a progressive future. Join our upcoming townhall. Candidate *[Candidate Name]* invites you to share your thoughts.\n\nDate: [Date]\nTime: [Time]\nVenue: [Location]\n\nPress the button below to RSVP.");
-      setButtonText("Register RSVP");
+      setMessage(TEMPLATE_COPY.welcome[selectedLanguage].message);
+      setButtonText(TEMPLATE_COPY.welcome[selectedLanguage].button);
       setAttachManifesto(false);
       setAttachUniqueUrl(false);
     } else if(val === "appeal") {
       setMediaUrl("");
-      setMessage("Dear citizen, your vote is your power! Vote for progress, transparency, and development. Cast your valuable vote on *[Date]* and support *[Candidate Name]*. Press below to view our manifesto.");
-      setButtonText("View Manifesto");
+      setMessage(TEMPLATE_COPY.appeal[selectedLanguage].message);
+      setButtonText(TEMPLATE_COPY.appeal[selectedLanguage].button);
       if (manifestoUrl) setAttachManifesto(true);
       if (uniqueUrl) setAttachUniqueUrl(true);
     } else {
@@ -174,6 +204,16 @@ export default function CustomerWhatsApp() {
     }
   };
 
+  React.useEffect(() => {
+    if (templateMode === "welcome") {
+      setMessage(TEMPLATE_COPY.welcome[language].message);
+      setButtonText(TEMPLATE_COPY.welcome[language].button);
+    } else if (templateMode === "appeal") {
+      setMessage(TEMPLATE_COPY.appeal[language].message);
+      setButtonText(TEMPLATE_COPY.appeal[language].button);
+    }
+  }, [language, templateMode]);
+
   const handleSendProcess = async () => {
     setIsSending(true);
     setSendError("");
@@ -183,6 +223,7 @@ export default function CustomerWhatsApp() {
         name: campaignName || "WhatsApp Broadcast",
         message,
         recipientCount: totalCost,
+        language,
       });
       setAvailableCredits(res.balances.wa);
       try {
@@ -285,6 +326,32 @@ export default function CustomerWhatsApp() {
                 value={campaignName}
                 onChange={(e) => setCampaignName(e.target.value)}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2">
+                <Languages className="h-4 w-4" /> Voter Message Language
+              </Label>
+              <Select
+                value={language}
+                onValueChange={(value) => {
+                  const next = (value || "en") as WhatsAppLanguage;
+                  setLanguage(next);
+                  if (templateMode !== "custom") handleTemplateSelect(templateMode, next);
+                }}
+              >
+                <SelectTrigger className="bg-background/50">
+                  <SelectValue placeholder="Select message language" />
+                </SelectTrigger>
+                <SelectContent>
+                  {WHATSAPP_LANGUAGES.map((item) => (
+                    <SelectItem key={item.code} value={item.code}>{item.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Uses the Campaign Page default language. You can override it for this broadcast.
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -487,7 +554,7 @@ export default function CustomerWhatsApp() {
                         <div className="text-center py-1 text-[#075E54] dark:text-emerald-400 font-semibold text-[10px] flex items-center justify-center gap-1">
                           <Link2 className="h-3 w-3" /> {buttonText}
                         </div>
-                        {(buttonText === "View Manifesto" || attachUniqueUrl) && uniqueUrl && (
+                        {(attachManifesto || attachUniqueUrl) && uniqueUrl && (
                           <div className="text-center text-[9px] text-[#075E54]/70 dark:text-emerald-400/70 font-mono truncate max-w-[190px] mx-auto pb-1">
                             https://{uniqueUrl}
                           </div>
@@ -526,6 +593,10 @@ export default function CustomerWhatsApp() {
                 <div className="flex justify-between items-center text-sm border-b border-border/50 pb-2">
                   <span className="text-muted-foreground">Target Recipients</span>
                   <span className="font-medium">{targetCount.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between items-center text-sm border-b border-border/50 pb-2">
+                  <span className="text-muted-foreground">Message Language</span>
+                  <span className="font-medium">{WHATSAPP_LANGUAGES.find((item) => item.code === language)?.label}</span>
                 </div>
                 <div className="flex justify-between items-center text-sm border-b border-border/50 pb-2">
                   <span className="text-muted-foreground">Delivery Route</span>

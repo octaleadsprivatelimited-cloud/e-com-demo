@@ -11,8 +11,8 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { SupportGuard } from '../auth/support.guard';
+import { CustomerGuard } from '../auth/customer.guard';
 import { TicketsService } from './tickets.service';
 import { CandidatesService } from '../candidates/candidates.service';
 import { AuditService } from '../common/audit.service';
@@ -27,14 +27,14 @@ export class TicketsController {
 
   // ─── Customer: raise & view own complaints ────────────────────
   @Get('mine')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(CustomerGuard)
   async mine(@Req() req: any) {
     const me = await this.candidates.ensureFromUser(req.user || {});
     return this.tickets.listForCustomer(me.id);
   }
 
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(CustomerGuard)
   async raise(@Req() req: any, @Body() body: any) {
     if (!body?.subject || !body?.description) {
       throw new BadRequestException('subject and description are required');
@@ -54,7 +54,7 @@ export class TicketsController {
   }
 
   @Post(':id/reply')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(CustomerGuard)
   async reply(@Req() req: any, @Param('id') id: string, @Body() body: any) {
     const me = await this.candidates.ensureFromUser(req.user || {});
     const t = await this.tickets.findById(id);

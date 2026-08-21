@@ -13,10 +13,35 @@ export async function requireCustomer(authorization: string | null) {
   const api = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
   const response = await fetch(`${api}/auth/verify-session`, {
     headers: { Authorization: authorization }, cache: 'no-store',
+    signal: AbortSignal.timeout(5_000),
   });
   if (!response.ok) return null;
   const data = await response.json();
   return data?.valid && data?.user?.role === 'customer' ? data.user : null;
+}
+
+type LimitRecord = { count: number; resetAt: number };
+const paymentLimits = new Map<string, LimitRecord>();
+
+/** Process-local guard; production must additionally enforce this at the edge. */
+export function enforcePaymentRateLimit(
+  identity: string,
+  action: 'create' | 'confirm',
+): { allowed: boolean; retryAfter: number } {
+  const now = Date.now();
+  const windowMs = 60_000;
+  const limit = action === 'create' ? 5 : 20;
+  const key = `${action}:${identity}`;
+  const current = paymentLimits.get(key);
+  if (!current || current.resetAt <= now) {
+    paymentLimits.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, retryAfter: 0 };
+  }
+  if (current.count >= limit) {
+    return { allowed: false, retryAfter: Math.max(1, Math.ceil((current.resetAt - now) / 1000)) };
+  }
+  current.count += 1;
+  return { allowed: true, retryAfter: 0 };
 }
 
 export function callbackOrigin(requestUrl: string): string {

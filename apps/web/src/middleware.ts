@@ -8,7 +8,13 @@ import type { NextRequest } from "next/server";
  * Applies defense-in-depth HTTP security headers to all responses.
  */
 export function middleware(request: NextRequest) {
-  const response = NextResponse.next();
+  const isProduction = process.env.NODE_ENV === 'production';
+  const nonce = isProduction
+    ? btoa(crypto.randomUUID()).replace(/=+$/g, '')
+    : '';
+  const requestHeaders = new Headers(request.headers);
+  if (nonce) requestHeaders.set('x-nonce', nonce);
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
   const { pathname } = request.nextUrl;
 
   // ── Core Security Headers ─────────────────────────────────────
@@ -43,12 +49,15 @@ export function middleware(request: NextRequest) {
   const apiOrigin = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
   // Content Security Policy — tight defaults, allow self + known CDNs
+  const scriptPolicy = isProduction
+    ? `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`
+    : "script-src 'self' 'unsafe-eval' 'unsafe-inline'";
   const csp = [
     "default-src 'self'",
     // TODO PRODUCTION: Replace 'unsafe-eval' 'unsafe-inline' with nonce-based CSP:
     //   script-src 'self' 'nonce-<generated-per-request>'
     // Next.js requires 'unsafe-eval' + 'unsafe-inline' in dev mode only.
-    "script-src 'self' 'unsafe-eval' 'unsafe-inline'",            // Tighten with nonce in production
+    scriptPolicy,
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: blob: https://github.com https://avatars.githubusercontent.com https://images.unsplash.com",

@@ -1,11 +1,18 @@
 import { NextResponse } from 'next/server';
 import { razorpayBasicAuthHeader } from '@/lib/razorpay-config';
-import { PAYMENT_PACKAGES, requireCustomer, signGrant, verifyPaymentLinkSignature } from '@/lib/payment-security';
+import { enforcePaymentRateLimit, PAYMENT_PACKAGES, requireCustomer, signGrant, verifyPaymentLinkSignature } from '@/lib/payment-security';
 
 export async function POST(req: Request) {
   try {
     const user = await requireCustomer(req.headers.get('authorization'));
     if (!user) return NextResponse.json({ success: false, message: 'Authentication required' }, { status: 401 });
+    const rate = enforcePaymentRateLimit(user.id, 'confirm');
+    if (!rate.allowed) {
+      return NextResponse.json(
+        { success: false, message: 'Too many payment confirmations' },
+        { status: 429, headers: { 'Retry-After': String(rate.retryAfter) } },
+      );
+    }
     const body = await req.json();
     const linkId = String(body?.paymentLinkId || '');
     const referenceId = String(body?.referenceId || '');
@@ -20,6 +27,7 @@ export async function POST(req: Request) {
     }
     const response = await fetch(`https://api.razorpay.com/v1/payment_links/${encodeURIComponent(linkId)}`, {
       headers: { Authorization: razorpayBasicAuthHeader() }, cache: 'no-store',
+      signal: AbortSignal.timeout(8_000),
     });
     if (!response.ok) return NextResponse.json({ success: false, message: 'Payment verification failed' }, { status: 502 });
     const link = await response.json();

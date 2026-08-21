@@ -9,9 +9,10 @@ import {
   Req,
   UseGuards,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard } from '../auth/admin.guard';
+import { CustomerGuard } from '../auth/customer.guard';
 import { CandidatesService } from './candidates.service';
 import type { Candidate } from './candidates.service';
 
@@ -28,7 +29,7 @@ export class CandidatesController {
 
   /** The currently authenticated candidate's own record. */
   @Get('me')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(CustomerGuard)
   async me(@Req() req: any): Promise<Candidate> {
     const user = req.user;
     const found = user.mobile
@@ -36,6 +37,35 @@ export class CandidatesController {
       : await this.candidates.findById(user.id);
     if (!found) throw new NotFoundException('Candidate profile not found');
     return found;
+  }
+
+  /** Save the authenticated customer's public campaign language content. */
+  @Patch('me/public-page')
+  @UseGuards(CustomerGuard)
+  async updatePublicPage(@Req() req: any, @Body() body: any): Promise<Candidate> {
+    const me = await this.candidates.ensureFromUser(req.user || {});
+    const languages = ['en', 'te', 'hi'] as const;
+    if (!languages.includes(body?.defaultLanguage)) {
+      throw new BadRequestException('defaultLanguage must be en, te, or hi');
+    }
+    const localizedText = (value: any, maxLength: number) =>
+      Object.fromEntries(languages.map((code) => [
+        code,
+        typeof value?.[code] === 'string' ? value[code].trim().slice(0, maxLength) : '',
+      ]));
+    const promises = Object.fromEntries(languages.map((code) => [
+      code,
+      Array.isArray(body?.customPromises?.[code])
+        ? body.customPromises[code].slice(0, 20).map((item: any) => String(item).trim().slice(0, 300))
+        : [],
+    ]));
+    return this.candidates.update(me.id, {
+      defaultLanguage: body.defaultLanguage,
+      customHeadline: localizedText(body.customHeadline, 180),
+      customBio: localizedText(body.customBio, 1200),
+      manifestoTitle: localizedText(body.manifestoTitle, 180),
+      customPromises: promises,
+    });
   }
 
   /** Read an arbitrary candidate — ADMIN ONLY. */
@@ -53,7 +83,7 @@ export class CandidatesController {
    * other people). Admin (add-candidate) may create anything.
    */
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(CustomerGuard)
   create(@Req() req: any, @Body() body: any): Promise<Candidate> {
     if (req.user?.role !== 'admin') {
       // Explicit allowlist: customers cannot mass-assign balances, payment
