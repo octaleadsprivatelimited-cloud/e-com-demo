@@ -21,6 +21,12 @@ export function setSessionToken(token: string): void {
 }
 
 export function clearSession(): void {
+  try {
+    const customer = JSON.parse(localStorage.getItem('currentCustomerUser') || 'null');
+    if (/^\d{10}$/.test(customer?.mobile || '')) {
+      localStorage.setItem('poltica_last_mobile', customer.mobile);
+    }
+  } catch {}
   sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem('currentCustomerUser');
 }
@@ -103,22 +109,6 @@ export async function verifySession(): Promise<{
       }
     } catch {
       // API offline - fallback to local user check below
-    }
-  }
-
-  // Graceful degradation / offline development mode
-  if (typeof window !== 'undefined') {
-    const sessionUser = localStorage.getItem("currentCustomerUser");
-    if (sessionUser) {
-      try {
-        const parsed = JSON.parse(sessionUser);
-        if (parsed && parsed.id) {
-          return {
-            valid: true,
-            user: { mobile: parsed.mobile || "", id: parsed.id, role: "customer" }
-          };
-        }
-      } catch (e) {}
     }
   }
 

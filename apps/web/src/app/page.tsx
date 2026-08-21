@@ -165,6 +165,15 @@ export default function RootAuthPage() {
 
   // Sync initial setup
   useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("timeout") === "1") {
+      setActiveTab("signin");
+      setPortalOpen(true);
+      setAuthError("Your session expired after 4 hours. Verify your registered mobile number with OTP to continue.");
+      const lastMobile = localStorage.getItem("poltica_last_mobile") || "";
+      if (/^\d{10}$/.test(lastMobile)) setLoginMobile(lastMobile);
+    }
+
     if (!localStorage.getItem("poltica_candidates")) {
       const initialCandidates = [
         { id: "CAN-001", name: "Rahul Sharma", district: "Pune", area: "Sadashiv Peth", status: "Active", balances: { sms: 95000, ivr: 50000, wa: 12000 }, payments: 23000, contacts: 45000, mobile: "9876543210", uniqueUrl: "poltica.in-sadashiv-peth-rahul-sharma", manifestoUrl: "", brochureUrl: "" },
@@ -488,7 +497,6 @@ export default function RootAuthPage() {
             <a href="#platform" className="flex items-center gap-1.5 transition-colors hover:text-[#0b5cff]">Product <ChevronDown className="h-3.5 w-3.5" /></a>
             <a href="#solutions" className="flex items-center gap-1.5 transition-colors hover:text-[#0b5cff]">Solutions <ChevronDown className="h-3.5 w-3.5" /></a>
             <a href="#security" className="transition-colors hover:text-[#0b5cff]">Security</a>
-            <a href="#pricing" className="transition-colors hover:text-[#0b5cff]">Pricing</a>
           </nav>
 
           <div className="flex items-center gap-3 justify-self-end sm:gap-4">

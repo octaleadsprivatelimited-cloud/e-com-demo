@@ -35,6 +35,7 @@ import {
   AttachmentMedia,
   AttachmentTitle,
 } from "@/components/ui/attachment";
+import { candidatesApi } from "@/lib/api";
 
 // Supported languages list
 const SUPPORTED_LANGUAGES = [
@@ -44,6 +45,42 @@ const SUPPORTED_LANGUAGES = [
 ];
 
 const SUPPORTED_LANGUAGE_CODES = new Set(SUPPORTED_LANGUAGES.map(({ code }) => code));
+
+const VOTER_LABELS = {
+  en: {
+    voterLanguage: "Voter language",
+    goals: "Key blueprint goals",
+    compatible: "Compatible with iOS & Android",
+    download: "Download manifesto.pdf",
+    feedback: "Send direct feedback to",
+    name: "Your name",
+    suggestion: "Enter suggestions/issues...",
+    submit: "Submit feedback",
+    poweredBy: "Campaign powered by Poltica Platform",
+  },
+  te: {
+    voterLanguage: "ఓటరు భాష",
+    goals: "ప్రధాన అభివృద్ధి లక్ష్యాలు",
+    compatible: "iOS మరియు Android కు అనుకూలం",
+    download: "మేనిఫెస్టోను డౌన్‌లోడ్ చేయండి",
+    feedback: "నేరుగా అభిప్రాయం పంపండి:",
+    name: "మీ పేరు",
+    suggestion: "మీ సూచనలు / సమస్యలు నమోదు చేయండి...",
+    submit: "అభిప్రాయం పంపండి",
+    poweredBy: "Poltica ప్లాట్‌ఫారమ్ ద్వారా ప్రచారం",
+  },
+  hi: {
+    voterLanguage: "मतदाता की भाषा",
+    goals: "प्रमुख विकास लक्ष्य",
+    compatible: "iOS और Android के अनुकूल",
+    download: "घोषणापत्र डाउनलोड करें",
+    feedback: "सीधे प्रतिक्रिया भेजें:",
+    name: "आपका नाम",
+    suggestion: "अपने सुझाव / समस्याएँ लिखें...",
+    submit: "प्रतिक्रिया भेजें",
+    poweredBy: "Poltica प्लेटफ़ॉर्म द्वारा संचालित अभियान",
+  },
+} as const;
 
 // YouTube video link parser using youtube-nocookie.com
 const getYoutubeEmbedUrl = (url: string, autoplay: boolean) => {
@@ -267,6 +304,8 @@ export default function CampaignPageBuilder() {
   const [previewLanguage, setPreviewLanguage] = useState("en");
   const [isCopied, setIsCopied] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [showShareMenu, setShowShareMenu] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
   const [youtubeAutoplay, setYoutubeAutoplay] = useState(false);
@@ -367,9 +406,11 @@ export default function CampaignPageBuilder() {
     }
   }, []);
 
-  const handleSavePageConfig = (e: React.FormEvent) => {
+  const handleSavePageConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!candidate) return;
+    setIsSaving(true);
+    setSaveError("");
 
     // Update global list
     const pool = JSON.parse(localStorage.getItem("poltica_candidates") || "[]");
@@ -421,8 +462,24 @@ export default function CampaignPageBuilder() {
     localStorage.setItem("currentCustomerUser", JSON.stringify(updatedUser));
     setCandidate(updatedUser);
 
-    setIsSaved(true);
-    setTimeout(() => setIsSaved(false), 2000);
+    try {
+      const serverCandidate = await candidatesApi.updatePublicPage({
+        defaultLanguage: defaultLanguage as 'en' | 'te' | 'hi',
+        customHeadline: headlines,
+        customBio: bios,
+        manifestoTitle: manifestoTitles,
+        customPromises: promisesByLang,
+      });
+      const syncedUser = { ...updatedUser, ...serverCandidate };
+      localStorage.setItem("currentCustomerUser", JSON.stringify(syncedUser));
+      setCandidate(syncedUser);
+      setIsSaved(true);
+      setTimeout(() => setIsSaved(false), 2000);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not save the voter language setting.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const copyToClipboard = () => {
@@ -468,6 +525,7 @@ export default function CampaignPageBuilder() {
   const activeEditingBio = bios[activeEditingLang] || bios["en"] || "";
   const activeEditingManifestoTitle = manifestoTitles[activeEditingLang] || manifestoTitles["en"] || "";
   const activeEditingPromises = promisesByLang[activeEditingLang] || promisesByLang["en"] || [];
+  const voterLabels = VOTER_LABELS[previewLanguage as keyof typeof VOTER_LABELS] || VOTER_LABELS.en;
 
   return (
     <div className="space-y-6 p-4 sm:p-8 pt-6 max-w-7xl mx-auto">
@@ -650,10 +708,10 @@ export default function CampaignPageBuilder() {
                 <div className="bg-[#f8fafc] dark:bg-zinc-900/40 p-3 rounded-lg border border-border/50 grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
                   <div>
                     <Label className="font-bold text-xs flex items-center gap-1">
-                      <Languages className="h-3.5 w-3.5 text-[#2563eb]" /> Default Public Language
+                      <Languages className="h-3.5 w-3.5 text-[#2563eb]" /> Default Voter Display Language
                     </Label>
                     <span className="text-[10px] text-muted-foreground block">
-                      Auto-detected or override candidate default language.
+                      Every voter opens the campaign page and manifesto in this language first. They can switch language later.
                     </span>
                   </div>
                   <select 
@@ -1067,12 +1125,17 @@ export default function CampaignPageBuilder() {
                 </div>
 
                 <div className="pt-4 border-t border-border/30 flex items-center justify-between">
-                  <p className="text-[11px] text-muted-foreground">Saving updates candidate profiles and compiles device-compatible outputs immediately.</p>
-                  <Button type="submit" disabled={isSaved} className="bg-primary text-primary-foreground">
+                  <div>
+                    <p className="text-[11px] text-muted-foreground">Saving publishes the selected default language to the voter-facing page and manifesto.</p>
+                    {saveError && <p className="mt-1 text-[11px] font-medium text-red-600">{saveError}</p>}
+                  </div>
+                  <Button type="submit" disabled={isSaved || isSaving} className="bg-primary text-primary-foreground">
                     {isSaved ? (
                       <>
                         <Check className="mr-2 h-4 w-4 text-emerald-400" /> Saved Successfully
                       </>
+                    ) : isSaving ? (
+                      <>Saving...</>
                     ) : (
                       <>
                         <Save className="mr-2 h-4 w-4" /> Save & Compile Page
@@ -1142,7 +1205,7 @@ export default function CampaignPageBuilder() {
                 {/* Voter simulated Language Switcher Dropdown (Live Preview) */}
                 <div className="bg-slate-200 dark:bg-zinc-800 p-2 flex items-center justify-between shrink-0 border-b border-border/40">
                   <span className="text-[9px] font-semibold text-muted-foreground flex items-center gap-1">
-                    <Languages className="h-3 w-3 text-[#2563eb]" /> Voter Language:
+                    <Languages className="h-3 w-3 text-[#2563eb]" /> {voterLabels.voterLanguage}:
                   </span>
                   <div className="flex gap-1">
                     {SUPPORTED_LANGUAGES.map((lang) => (
@@ -1258,7 +1321,7 @@ export default function CampaignPageBuilder() {
                     </div>
 
                     <div className="space-y-2">
-                      <p className="text-[10px] opacity-90 italic">Key Blueprint Goals:</p>
+                      <p className="text-[10px] opacity-90 italic">{voterLabels.goals}:</p>
                       
                       <div className="space-y-1.5">
                         {(promisesByLang[previewLanguage] || promisesByLang["en"] || []).map((promise, index) => (
@@ -1271,9 +1334,9 @@ export default function CampaignPageBuilder() {
                     </div>
 
                     <div className="pt-2 border-t border-white/10 flex items-center justify-between">
-                      <span className="text-[8px] opacity-75 font-mono">Compatible with iOS & Android</span>
+                      <span className="text-[8px] opacity-75 font-mono">{voterLabels.compatible}</span>
                       <Button type="button" size="sm" className="h-6 px-2 text-[9px] bg-white text-slate-900 hover:bg-slate-100 flex items-center gap-1 font-semibold">
-                        <Download className="h-2.5 w-2.5" /> Download manifesto.pdf
+                        <Download className="h-2.5 w-2.5" /> {voterLabels.download}
                       </Button>
                     </div>
 
@@ -1281,17 +1344,17 @@ export default function CampaignPageBuilder() {
 
                   {/* Voter contact widget */}
                   <div className="bg-white dark:bg-zinc-800 p-3 rounded-lg border border-border/40 space-y-2 shadow-sm text-center">
-                    <p className="font-bold text-[10px] text-[#1e293b] dark:text-zinc-100">Send direct feedback to {candidate?.name || "us"}</p>
-                    <Input disabled placeholder="Your Name" className="h-7 text-[10px] bg-background/50" />
-                    <Textarea disabled placeholder="Enter suggestions/issues..." className="min-h-[50px] text-[10px] bg-background/50 resize-none" />
-                    <Button disabled size="sm" className="h-6 w-full text-[9px] bg-[#2563eb] text-white">Submit Feedback</Button>
+                    <p className="font-bold text-[10px] text-[#1e293b] dark:text-zinc-100">{voterLabels.feedback} {candidate?.name || "us"}</p>
+                    <Input disabled placeholder={voterLabels.name} className="h-7 text-[10px] bg-background/50" />
+                    <Textarea disabled placeholder={voterLabels.suggestion} className="min-h-[50px] text-[10px] bg-background/50 resize-none" />
+                    <Button disabled size="sm" className="h-6 w-full text-[9px] bg-[#2563eb] text-white">{voterLabels.submit}</Button>
                   </div>
 
                 </div>
 
                 {/* Simulated Footer */}
                 <div className="bg-slate-100 dark:bg-[#1b1b1b] p-3 text-center text-[9px] text-muted-foreground border-t border-border/40 mt-auto">
-                  <p>© 2026 Campaign Powered by Poltica Platform</p>
+                  <p>© 2026 {voterLabels.poweredBy}</p>
                 </div>
 
               </div>

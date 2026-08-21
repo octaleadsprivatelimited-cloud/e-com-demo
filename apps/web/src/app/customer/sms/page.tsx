@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { MessageSquare, Send, CalendarClock, BookTemplate, Info, Loader2, CheckCircle2, AlertCircle, Clock } from "lucide-react";
+import { MessageSquare, Send, CalendarClock, BookTemplate, Info, Loader2, CheckCircle2, AlertCircle, Clock, Languages, Undo2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import Link from "next/link";
 import { candidatesApi, campaignsApi } from "@/lib/api";
+import { getSessionToken } from "@/lib/auth-api";
 
 export default function CustomerSMSBlasts() {
   const [campaignName, setCampaignName] = useState("");
@@ -41,6 +42,10 @@ export default function CustomerSMSBlasts() {
   const [sendError, setSendError] = useState("");
   const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
   const [customTemplateStatus, setCustomTemplateStatus] = useState<"Draft" | "Pending" | "Approved">("Draft");
+  const [messageLanguage, setMessageLanguage] = useState<"en" | "te">("en");
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translationError, setTranslationError] = useState("");
+  const [originalEnglishMessage, setOriginalEnglishMessage] = useState("");
 
   // Load User Data & API Config
   const [candidateName, setCandidateName] = useState("Rahul Sharma");
@@ -89,7 +94,11 @@ export default function CustomerSMSBlasts() {
   };
 
   const charCount = message.length;
-  const smsCountPerPerson = Math.ceil(charCount / 160) || 1;
+  const isUnicodeMessage = /[^\x00-\x7F]/.test(message);
+  const singleSegmentLimit = isUnicodeMessage ? 70 : 160;
+  const concatenatedSegmentLimit = isUnicodeMessage ? 67 : 153;
+  const smsCountPerPerson =
+    charCount <= singleSegmentLimit ? 1 : Math.ceil(charCount / concatenatedSegmentLimit);
   const targetCount = audienceMap[audience];
   const totalCost = targetCount * smsCountPerPerson;
   
@@ -119,6 +128,42 @@ export default function CustomerSMSBlasts() {
       setMessage("");
       setCustomTemplateStatus("Draft");
     }
+    setMessageLanguage("en");
+    setOriginalEnglishMessage("");
+    setTranslationError("");
+  };
+
+  const translateToTelugu = async () => {
+    if (!message.trim()) return;
+    setIsTranslating(true);
+    setTranslationError("");
+    try {
+      const response = await fetch('/api/translate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getSessionToken() || ''}`,
+        },
+        body: JSON.stringify({ text: message, target: 'te' }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.translatedText) throw new Error(data?.message || 'Translation failed');
+      setOriginalEnglishMessage(message);
+      setMessage(data.translatedText);
+      setMessageLanguage("te");
+    } catch (error) {
+      setTranslationError(error instanceof Error ? error.message : "Translation failed");
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  const restoreEnglish = () => {
+    if (!originalEnglishMessage) return;
+    setMessage(originalEnglishMessage);
+    setOriginalEnglishMessage("");
+    setMessageLanguage("en");
+    setTranslationError("");
   };
 
   const handleSendProcess = async () => {
@@ -131,6 +176,7 @@ export default function CustomerSMSBlasts() {
         name: campaignName || "SMS Campaign",
         message,
         recipientCount: totalCost,
+        language: messageLanguage,
       });
 
       // Reflect the authoritative post-send balance from the server.
@@ -285,11 +331,28 @@ export default function CustomerSMSBlasts() {
             </div>
 
             <div className="space-y-2">
-              <div className="flex justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <Label>Message Content</Label>
-                <span className={`text-xs ${charCount > 160 ? 'text-amber-500' : 'text-muted-foreground'}`}>
-                  {charCount} chars | {smsCountPerPerson} SMS credit(s) per person
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">{messageLanguage === "te" ? "తెలుగు" : "English"}</Badge>
+                  {messageLanguage === "te" && originalEnglishMessage ? (
+                    <Button type="button" variant="outline" size="sm" onClick={restoreEnglish}>
+                      <Undo2 className="mr-1.5 h-3.5 w-3.5" /> Restore English
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={translateToTelugu}
+                      disabled={!message.trim() || isTranslating}
+                      className="border-[#2563eb] text-[#2563eb]"
+                    >
+                      {isTranslating ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Languages className="mr-1.5 h-3.5 w-3.5" />}
+                      Translate to Telugu
+                    </Button>
+                  )}
+                </div>
               </div>
               <Textarea 
                 placeholder={templateMode === "custom" ? "Write your completely custom SMS template here..." : "Type your campaign message here..."}
@@ -297,12 +360,29 @@ export default function CustomerSMSBlasts() {
                 value={message}
                 onChange={(e) => {
                   setMessage(e.target.value);
+                  setMessageLanguage(/[\u0C00-\u0C7F]/.test(e.target.value) ? "te" : "en");
+                  setOriginalEnglishMessage("");
+                  setTranslationError("");
                   if (templateMode === "custom" && customTemplateStatus !== "Draft") {
                     setCustomTemplateStatus("Draft"); // Re-draft if they edit after approval/pending
                   }
                 }}
                 disabled={templateMode !== "custom" && templateMode !== ""}
               />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className={`text-xs ${charCount > singleSegmentLimit ? 'text-amber-500' : 'text-muted-foreground'}`}>
+                  {charCount} chars | {smsCountPerPerson} SMS credit(s) per person
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  {isUnicodeMessage ? "Unicode SMS: 70 chars, then 67 per segment" : "GSM SMS: 160 chars, then 153 per segment"}
+                </span>
+              </div>
+              {translationError && <p className="text-[11px] font-medium text-destructive">{translationError}</p>}
+              {messageLanguage === "te" && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                  Use the corresponding Telugu DLT-approved template before live delivery.
+                </p>
+              )}
             </div>
             
             <div className="space-y-2">

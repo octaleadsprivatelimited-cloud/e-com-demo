@@ -121,6 +121,16 @@ export const candidatesApi = {
     apiFetch<Candidate>('/candidates', { method: 'POST', body: JSON.stringify(data) }),
   update: (id: string, patch: Partial<Candidate>) =>
     apiFetch<Candidate>(`/candidates/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  updatePublicPage: (patch: {
+    defaultLanguage: 'en' | 'te' | 'hi';
+    customHeadline: Record<string, string>;
+    customBio: Record<string, string>;
+    manifestoTitle: Record<string, string>;
+    customPromises: Record<string, string[]>;
+  }) => apiFetch<Candidate>('/candidates/me/public-page', {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  }),
   remove: (id: string) =>
     apiFetch<{ success: boolean }>(`/candidates/${id}`, { method: 'DELETE' }),
 };
@@ -177,6 +187,7 @@ export const campaignsApi = {
     message: string;
     name?: string;
     recipientCount?: number;
+    language?: 'en' | 'te' | 'hi';
   }) =>
     apiFetch<{ campaign: Campaign; balances: { sms: number; wa: number; ivr: number } }>(
       '/campaigns',

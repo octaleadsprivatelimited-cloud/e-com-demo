@@ -218,7 +218,7 @@ export class AuthController {
     @Headers('authorization') authHeader: string,
     @Body() dto: SaveCredentialsDto,
   ) {
-    this.requireAuth(authHeader);
+    this.requireCustomerAuth(authHeader);
 
     // Encrypt each sensitive field
     const encrypted: Record<string, string> = {};
@@ -256,14 +256,14 @@ export class AuthController {
     @Headers('authorization') authHeader: string,
     @Body() dto: DecryptCredentialDto,
   ) {
-    this.requireAuth(authHeader);
+    this.requireCustomerAuth(authHeader);
     void dto;
     throw new ForbiddenException('Credential plaintext is never returned through the API.');
   }
 
   // ─── Helpers ──────────────────────────────────────────────────
 
-  private requireAuth(authHeader: string) {
+  private requireCustomerAuth(authHeader: string) {
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       throw new UnauthorizedException('Authentication required.');
     }
@@ -271,6 +271,9 @@ export class AuthController {
     const decoded = this.authService.verifyToken(token);
     if (!decoded) {
       throw new UnauthorizedException('Invalid or expired session.');
+    }
+    if (decoded.role !== 'customer') {
+      throw new ForbiddenException('Customer access required.');
     }
     return decoded;
   }

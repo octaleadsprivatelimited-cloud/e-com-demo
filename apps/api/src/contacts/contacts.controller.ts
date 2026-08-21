@@ -9,12 +9,12 @@ import {
   UseGuards,
   BadRequestException,
 } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CustomerGuard } from '../auth/customer.guard';
 import { ContactsService } from './contacts.service';
 import { CandidatesService } from '../candidates/candidates.service';
 
 @Controller('contacts')
-@UseGuards(JwtAuthGuard)
+@UseGuards(CustomerGuard)
 export class ContactsController {
   constructor(
     private readonly contacts: ContactsService,

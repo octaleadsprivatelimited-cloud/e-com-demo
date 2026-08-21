@@ -9,6 +9,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CustomerGuard } from '../auth/customer.guard';
 import { CampaignsService } from './campaigns.service';
 import type { Channel } from './campaigns.service';
 import { CandidatesService } from '../candidates/candidates.service';
@@ -32,6 +33,7 @@ export class CampaignsController {
   }
 
   @Get()
+  @UseGuards(CustomerGuard)
   async list(@Req() req: any) {
     const owner = await this.owner(req);
     return this.campaigns.listForOwner(owner.id);
@@ -75,6 +77,7 @@ export class CampaignsController {
    * and records the campaign — so usage genuinely draws down the prepaid balance.
    */
   @Post()
+  @UseGuards(CustomerGuard)
   async send(@Req() req: any, @Body() body: any) {
     const owner = await this.owner(req);
     const channel = body?.channel as Channel;
@@ -83,6 +86,10 @@ export class CampaignsController {
     }
     if (!body?.message || typeof body.message !== 'string') {
       throw new BadRequestException('message is required');
+    }
+    const language = String(body?.language || 'en');
+    if (!['en', 'te', 'hi'].includes(language)) {
+      throw new BadRequestException('language must be en, te, or hi');
     }
     if (owner.status === 'Suspended') {
       throw new BadRequestException('Account is suspended. Contact the administrator.');
@@ -116,6 +123,7 @@ export class CampaignsController {
       message: body.message,
       recipientCount,
       creditsUsed: cost,
+      language: language as 'en' | 'te' | 'hi',
     });
 
     this.audit.log('campaign.sent', {

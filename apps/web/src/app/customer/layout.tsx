@@ -139,10 +139,12 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
     <div className="flex min-h-screen w-full bg-[#f1f5f9] dark:bg-[#121212]">
       {/* Auto-logout on inactivity / max session age */}
       <SessionTimeout
-        idleMinutes={15}
+        idleMinutes={240}
+        absoluteHours={4}
         onTimeout={() => {
           clearSession();
           sessionStorage.removeItem("poltica_session_start");
+          sessionStorage.removeItem("poltica_session_start_last_activity");
           window.location.href = "/?timeout=1";
         }}
       />

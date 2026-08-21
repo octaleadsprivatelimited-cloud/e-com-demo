@@ -75,13 +75,14 @@ export class AuthService {
     // invalidate the code already delivered to the customer.
     const active = this.otpStore.get(mobile);
     if (active && active.expiresAt > now && active.attempts < active.maxAttempts) {
-      const isDev = process.env.NODE_ENV !== 'production';
+      const exposeTestOtp =
+        process.env.NODE_ENV === 'test' && process.env.EXPOSE_TEST_OTP === 'true';
       return {
         success: true,
-        message: isDev
-          ? 'Existing OTP remains active (dev mode — shown in response)'
+        message: exposeTestOtp
+          ? 'Existing test OTP remains active'
           : 'OTP sent to your registered mobile number',
-        ...(isDev ? { otp: active.otp } : {}),
+        ...(exposeTestOtp ? { otp: active.otp } : {}),
       };
     }
 
@@ -101,14 +102,13 @@ export class AuthService {
 
     // In production, send via SMS gateway here (Twilio, Msg91, etc.)
     // For now, return OTP only in development mode
-    const isDev = process.env.NODE_ENV !== 'production';
+    const exposeTestOtp =
+      process.env.NODE_ENV === 'test' && process.env.EXPOSE_TEST_OTP === 'true';
 
     return {
       success: true,
-      message: isDev
-        ? 'OTP generated (dev mode — shown in response)'
-        : 'OTP sent to your registered mobile number',
-      ...(isDev ? { otp } : {}),
+      message: exposeTestOtp ? 'Test OTP generated' : 'OTP sent to your registered mobile number',
+      ...(exposeTestOtp ? { otp } : {}),
     };
   }
 
@@ -166,9 +166,10 @@ export class AuthService {
    * Issue a JWT session token for a verified user.
    */
   issueToken(payload: { mobile: string; id: string; role: 'customer' | 'admin' | 'support'; name?: string }): string {
-    // Short-lived session token (banking-style). Combined with the frontend
-    // idle-timeout, this bounds the window a stolen token is usable.
-    return this.jwtService.sign(payload, { expiresIn: '2h' });
+    // Customers re-authenticate by OTP after four hours. Privileged admin and
+    // support sessions retain the shorter two-hour server-side ceiling.
+    const expiresIn = payload.role === 'customer' ? '4h' : '2h';
+    return this.jwtService.sign(payload, { expiresIn });
   }
 
   /**

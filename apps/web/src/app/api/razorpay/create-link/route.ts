@@ -1,12 +1,19 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { razorpayBasicAuthHeader } from '@/lib/razorpay-config';
-import { callbackOrigin, PAYMENT_PACKAGES, requireCustomer } from '@/lib/payment-security';
+import { callbackOrigin, enforcePaymentRateLimit, PAYMENT_PACKAGES, requireCustomer } from '@/lib/payment-security';
 
 export async function POST(req: Request) {
   try {
     const user = await requireCustomer(req.headers.get('authorization'));
     if (!user) return NextResponse.json({ success: false, message: 'Authentication required' }, { status: 401 });
+    const rate = enforcePaymentRateLimit(user.id, 'create');
+    if (!rate.allowed) {
+      return NextResponse.json(
+        { success: false, message: 'Too many payment-link requests' },
+        { status: 429, headers: { 'Retry-After': String(rate.retryAfter) } },
+      );
+    }
     const { packageId } = await req.json();
     const pkg = PAYMENT_PACKAGES[packageId as keyof typeof PAYMENT_PACKAGES];
     if (!pkg) return NextResponse.json({ success: false, message: 'Unknown package' }, { status: 400 });
@@ -27,6 +34,7 @@ export async function POST(req: Request) {
         callback_method: 'get',
         notes: { ownerId: user.id, packageId },
       }),
+      signal: AbortSignal.timeout(8_000),
     });
 
     if (!response.ok) {

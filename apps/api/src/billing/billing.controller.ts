@@ -9,6 +9,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CustomerGuard } from '../auth/customer.guard';
 import { BillingService } from './billing.service';
 import { CandidatesService } from '../candidates/candidates.service';
 import { AuditService } from '../common/audit.service';
@@ -37,6 +38,7 @@ export class BillingController {
   }
 
   @Get('payments')
+  @UseGuards(CustomerGuard)
   async payments(@Req() req: any) {
     const owner = await this.owner(req);
     return this.billing.listForOwner(owner.id);
@@ -51,6 +53,7 @@ export class BillingController {
 
   /** Finalize a server-verified Razorpay payment grant exactly once. */
   @Post('topup')
+  @UseGuards(CustomerGuard)
   async topup(@Req() req: any, @Body() body: any) {
     const owner = await this.owner(req);
     const grant = String(body?.grant || '');

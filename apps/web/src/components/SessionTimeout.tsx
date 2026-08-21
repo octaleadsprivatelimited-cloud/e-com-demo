@@ -28,34 +28,63 @@ export function SessionTimeout({
   cb.current = onTimeout;
 
   useEffect(() => {
+    const idleStorageKey = `${storageKey}_last_activity`;
+    let timedOut = false;
+
     if (!sessionStorage.getItem(storageKey)) {
       sessionStorage.setItem(storageKey, String(Date.now()));
     }
 
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    if (!sessionStorage.getItem(idleStorageKey)) {
+      sessionStorage.setItem(idleStorageKey, String(Date.now()));
+    }
 
-    const checkAbsolute = () => {
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastRecordedActivity = Number(sessionStorage.getItem(idleStorageKey) || Date.now());
+
+    const timeout = (reason: "idle" | "absolute") => {
+      if (timedOut) return;
+      timedOut = true;
+      cb.current(reason);
+    };
+
+    const checkExpiry = () => {
+      const now = Date.now();
       const start = Number(sessionStorage.getItem(storageKey) || Date.now());
-      if (Date.now() - start > absoluteHours * 3_600_000) {
-        cb.current("absolute");
+      const lastActivity = Number(sessionStorage.getItem(idleStorageKey) || now);
+      if (now - start >= absoluteHours * 3_600_000) {
+        timeout("absolute");
+        return true;
       }
+      if (now - lastActivity >= idleMinutes * 60_000) {
+        timeout("idle");
+        return true;
+      }
+      return false;
     };
 
     const reset = () => {
+      if (checkExpiry()) return;
+      const now = Date.now();
+      // Mousemove can fire many times per second; persist activity at most
+      // twice per minute while still resetting the in-memory timer instantly.
+      if (now - lastRecordedActivity >= 30_000) {
+        lastRecordedActivity = now;
+        sessionStorage.setItem(idleStorageKey, String(now));
+      }
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => cb.current("idle"), idleMinutes * 60_000);
-      checkAbsolute();
+      idleTimer = setTimeout(() => timeout("idle"), idleMinutes * 60_000);
     };
 
     const events = ["mousemove", "mousedown", "keydown", "scroll", "touchstart"];
     events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
-    reset();
-    const absTimer = setInterval(checkAbsolute, 60_000);
+    if (!checkExpiry()) reset();
+    const expiryTimer = setInterval(checkExpiry, 60_000);
 
     return () => {
       events.forEach((e) => window.removeEventListener(e, reset));
       if (idleTimer) clearTimeout(idleTimer);
-      clearInterval(absTimer);
+      clearInterval(expiryTimer);
     };
   }, [idleMinutes, absoluteHours, storageKey]);
 

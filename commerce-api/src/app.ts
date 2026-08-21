@@ -39,9 +39,12 @@ import {
   storefrontConfigSchema,
   promotionConfigSchema,
   recommendationRequestSchema,
+  mobileOtpRequestSchema,
+  mobileOtpVerifySchema,
+  googleLoginSchema,
 } from "./schemas.js";
 import { validate } from "./validate.js";
-import { CommerceStore, seedStore } from "./store.js";
+import { CommerceStore, seedStore, type StoredUser } from "./store.js";
 import {
   DevelopmentPaymentProvider,
   DevelopmentShippingProvider,
@@ -53,6 +56,7 @@ import { PrismaPersistence } from "./persistence.js";
 import { assertOrderTransition } from "./order-state.js";
 import { defaultStorefrontConfig, normalizeHostname, storefrontSettingKey, type StorefrontConfig } from "./storefront-config.js";
 import { activeCampaign, defaultPromotionConfig, type PromotionConfig } from "./promotions.js";
+import { verifyGoogleIdToken } from "./google-auth.js";
 
 const ok = (
   res: express.Response,
@@ -87,6 +91,7 @@ export async function createApp(overrides?: {
   config?: AppConfig;
   store?: CommerceStore;
   persistence?: PrismaPersistence | null;
+  googleVerifier?: typeof verifyGoogleIdToken;
 }) {
   const config = overrides?.config || loadConfig(),
     store = overrides?.store || new CommerceStore(),
@@ -99,6 +104,7 @@ export async function createApp(overrides?: {
     vault = new SecretVault(config.INTEGRATION_ENCRYPTION_KEY),
     developmentPayments = new DevelopmentPaymentProvider(),
     developmentShipping = new DevelopmentShippingProvider();
+  const googleVerifier=overrides?.googleVerifier||verifyGoogleIdToken, mobileChallenges=new Map<string,{hash:string;expiresAt:number;attempts:number}>();
   const developmentStorefronts = new Map<string, StorefrontConfig>();
   const developmentPromotions = new Map<string, PromotionConfig>();
   if (persistence) {
@@ -250,6 +256,11 @@ export async function createApp(overrides?: {
   app.get("/health", (_req, res) =>
     ok(res, { status: "healthy", time: new Date().toISOString() }),
   );
+  const issueCustomerSession=async(user:StoredUser,res:express.Response)=>{const principal:Principal={sub:user.id,role:user.role,permissions:user.permissions},accessToken=signAccessToken(principal,config.JWT_SECRET),sessionId=crypto.randomUUID(),refreshToken=jwt.sign({...principal,jti:sessionId},config.JWT_REFRESH_SECRET,{algorithm:"HS256",expiresIn:"7d",issuer:"aster-commerce",audience:"store-refresh"});store.sessions.set(sessionId,{userId:user.id,expiresAt:Date.now()+604800000});await persistence?.saveSession(sessionId,user.id,Date.now()+604800000);res.cookie("refresh_token",refreshToken,{httpOnly:true,secure:config.NODE_ENV==="production",sameSite:"strict",path:"/api/v1/auth",maxAge:604800000});return {accessToken,user:{id:user.id,name:user.name,email:user.email,mobile:user.mobile,role:user.role}}};
+  app.get("/api/v1/auth/providers",(_req,res)=>ok(res,{google:{enabled:Boolean(config.GOOGLE_CLIENT_ID),clientId:config.GOOGLE_CLIENT_ID},mobileOtp:{enabled:true}}));
+  app.post("/api/v1/auth/mobile/request",limiter(5,60000),validate(mobileOtpRequestSchema),async(req,res)=>{const code=String(crypto.randomInt(0,1_000_000)).padStart(6,"0"),hash=crypto.createHmac("sha256",config.JWT_SECRET).update(`${req.body.mobile}:${code}`).digest("hex");mobileChallenges.set(req.body.mobile,{hash,expiresAt:Date.now()+300000,attempts:0});if(persistence)await persistence.queueNotification({channel:"SMS",template:"auth.mobile_otp",destination:req.body.mobile,payload:{code,expiresInMinutes:5}});return ok(res,{expiresInSeconds:300,...(config.NODE_ENV!=="production"?{developmentCode:code}:{})},"If the number can receive messages, a code has been sent")});
+  app.post("/api/v1/auth/mobile/verify",limiter(10,60000),validate(mobileOtpVerifySchema),async(req,res)=>{const challenge=mobileChallenges.get(req.body.mobile),submitted=crypto.createHmac("sha256",config.JWT_SECRET).update(`${req.body.mobile}:${req.body.code}`).digest("hex");if(!challenge||challenge.expiresAt<Date.now()||challenge.attempts>=5||!crypto.timingSafeEqual(Buffer.from(challenge.hash),Buffer.from(submitted))){if(challenge)challenge.attempts++;throw new AppError(401,"INVALID_OTP","The code is invalid or expired")}mobileChallenges.delete(req.body.mobile);let user=store.findUserByMobile(req.body.mobile);if(user&&user.role!=="CUSTOMER")throw new AppError(403,"CUSTOMER_LOGIN_ONLY","Use staff sign-in for this account");if(!user){user=store.createUser({name:req.body.name||`Customer ${req.body.mobile.slice(-4)}`,email:`mobile-${crypto.createHash("sha256").update(req.body.mobile).digest("hex").slice(0,20)}@account.local`,mobile:req.body.mobile,passwordHash:await hashPassword(crypto.randomBytes(32).toString("hex")),role:"CUSTOMER",permissions:[]});await persistence?.saveUser(user)}return ok(res,await issueCustomerSession(user,res),"Mobile number verified")});
+  app.post("/api/v1/auth/google",limiter(10,60000),validate(googleLoginSchema),async(req,res)=>{if(!config.GOOGLE_CLIENT_ID)throw new AppError(503,"GOOGLE_AUTH_NOT_CONFIGURED","Google sign-in is not configured");const claims=await googleVerifier(req.body.credential,config.GOOGLE_CLIENT_ID);let user=store.findUser(claims.email);if(user&&user.role!=="CUSTOMER")throw new AppError(403,"CUSTOMER_LOGIN_ONLY","Use staff sign-in for this account");if(!user){user=store.createUser({name:claims.name||claims.email.split("@")[0]||"Google customer",email:claims.email,passwordHash:await hashPassword(crypto.randomBytes(32).toString("hex")),role:"CUSTOMER",permissions:[]});await persistence?.saveUser(user)}return ok(res,await issueCustomerSession(user,res),"Google account verified")});
   app.post(
     "/api/v1/auth/register",
     limiter(8, 60_000),
