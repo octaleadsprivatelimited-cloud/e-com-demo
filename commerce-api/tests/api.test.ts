@@ -7,7 +7,9 @@ import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { AppConfig } from "../src/config.js";
-import { CommerceStore } from "../src/store.js";
+import { AppError } from "../src/errors.js";
+import { signAccessToken } from "../src/security.js";
+import { CommerceStore, seedStore } from "../src/store.js";
 const config: AppConfig = {
   NODE_ENV: "test",
   PORT: 4001,
@@ -328,6 +330,386 @@ describe("commerce API", () => {
       },
     );
     expect(rejected.status).toBe(415);
+  });
+  it("manages paginated products with stable variants and non-destructive retirement", async () => {
+    const smallId = crypto.randomUUID(),
+      largeId = crypto.randomUUID();
+    const payload = {
+      name: "Admin Matrix Dress",
+      slug: `admin-matrix-dress-${crypto.randomUUID().slice(0, 8)}`,
+      description: "A test product used to verify the complete admin catalog workflow.",
+      category: "Wardrobe",
+      brand: "Aster Test",
+      status: "ACTIVE",
+      taxRate: 12,
+      specifications: { Material: "Linen" },
+      media: [
+        {
+          url: "https://example.com/admin-matrix-front.webp",
+          alt: "Dress front",
+          type: "IMAGE",
+          position: 0,
+        },
+        {
+          url: "https://example.com/admin-matrix-back.webp",
+          alt: "Dress back",
+          type: "IMAGE",
+          position: 1,
+        },
+      ],
+      variants: [
+        {
+          id: smallId,
+          sku: `TEST-DRESS-S-${crypto.randomUUID().slice(0, 8)}`,
+          title: "Small",
+          active: true,
+          price: 3990,
+          mrp: 4490,
+          stock: 8,
+          reserved: 0,
+          attributes: { Size: "S" },
+          weightGrams: 400,
+        },
+        {
+          id: largeId,
+          sku: `TEST-DRESS-L-${crypto.randomUUID().slice(0, 8)}`,
+          title: "Large",
+          active: true,
+          price: 4190,
+          mrp: 4690,
+          stock: 11,
+          reserved: 0,
+          attributes: { Size: "L" },
+          weightGrams: 430,
+        },
+      ],
+    };
+    const inactive = await request("/api/v1/admin/products", {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        ...payload,
+        slug: `${payload.slug}-inactive-rejected`,
+        variants: payload.variants.map((variant) => ({
+          ...variant,
+          active: false,
+        })),
+      }),
+    });
+    expect(inactive.status).toBe(409);
+    expect(inactive.body.error.code).toBe("ACTIVE_VARIANT_REQUIRED");
+    const created = await request("/api/v1/admin/products", {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify(payload),
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.data.options).toEqual([
+      { name: "Size", values: ["S", "L"] },
+    ]);
+    const productId = created.body.data.id as string;
+    const duplicateSlug = await request("/api/v1/admin/products", {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        ...payload,
+        variants: payload.variants.map((variant) => ({
+          ...variant,
+          id: crypto.randomUUID(),
+          sku: `${variant.sku}-SLUG-CHECK`,
+        })),
+      }),
+    });
+    expect(duplicateSlug.status).toBe(409);
+    expect(duplicateSlug.body.error.code).toBe("SLUG_EXISTS");
+    const duplicateSku = await request("/api/v1/admin/products", {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        ...payload,
+        slug: `${payload.slug}-sku-check`,
+        variants: [{ ...payload.variants[0], id: crypto.randomUUID() }],
+      }),
+    });
+    expect(duplicateSku.status).toBe(409);
+    expect(duplicateSku.body.error.code).toBe("SKU_EXISTS");
+    const listed = await request(
+      `/api/v1/admin/products?search=Admin%20Matrix&status=ACTIVE&page=1&limit=1`,
+      { headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    expect(listed.status).toBe(200);
+    expect(listed.body.data.items).toHaveLength(1);
+    expect(listed.body.data.pagination.total).toBe(1);
+    expect(listed.body.data.items[0]).toMatchObject({
+      id: productId,
+      variantCount: 2,
+      activeVariantCount: 2,
+      totalOnHand: 19,
+    });
+
+    const originalMedia = created.body.data.media as Array<{
+      id: string;
+      url: string;
+      alt: string;
+      type: "IMAGE";
+      position: number;
+    }>;
+    const large = payload.variants[1]!;
+    const updated = await request(`/api/v1/admin/products/${productId}`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        ...payload,
+        media: originalMedia.map((item, index) =>
+          index === 0 ? { ...item, variantId: smallId } : item,
+        ),
+        variants: [{ ...large, stock: 999 }],
+      }),
+    });
+    expect(updated.status).toBe(200);
+    expect(
+      updated.body.data.variants.find((variant: any) => variant.id === smallId),
+    ).toMatchObject({ active: false });
+    expect(
+      updated.body.data.variants.find((variant: any) => variant.id === largeId),
+    ).toMatchObject({ active: true, inventory: { onHand: 11 } });
+
+    const publicProduct = await request(`/api/v1/products/${productId}`);
+    expect(publicProduct.status).toBe(200);
+    expect(publicProduct.body.data.variants).toHaveLength(1);
+    expect(publicProduct.body.data.variants[0].id).toBe(largeId);
+    expect(publicProduct.body.data.media).toHaveLength(1);
+    expect(publicProduct.body.data.media[0].id).toBe(originalMedia[1]!.id);
+
+    const reordered = await request(
+      `/api/v1/admin/products/${productId}/media/order`,
+      {
+        method: "PUT",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({
+          mediaIds: [originalMedia[1]!.id, originalMedia[0]!.id],
+        }),
+      },
+    );
+    expect(reordered.status).toBe(200);
+    expect(reordered.body.data.map((item: any) => item.id)).toEqual([
+      originalMedia[1]!.id,
+      originalMedia[0]!.id,
+    ]);
+    const metadata = await request(
+      `/api/v1/admin/products/${productId}/media/${originalMedia[1]!.id}`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ alt: "Updated back view", variantId: largeId }),
+      },
+    );
+    expect(metadata.status).toBe(200);
+    expect(metadata.body.data).toMatchObject({
+      alt: "Updated back view",
+      variantId: largeId,
+    });
+    const removed = await request(
+      `/api/v1/admin/products/${productId}/media/${originalMedia[0]!.id}`,
+      {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${adminToken}` },
+      },
+    );
+    expect(removed.status).toBe(200);
+    const detail = await request(`/api/v1/admin/products/${productId}`, {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(detail.body.data.media).toHaveLength(1);
+    expect(detail.body.data.media[0]).toMatchObject({
+      id: originalMedia[1]!.id,
+      position: 0,
+    });
+  });
+  it("records idempotent inventory adjustments and paginated movement history", async () => {
+    const product = store
+      .listProducts()
+      .find((candidate) => candidate.name === "Admin Matrix Dress")!;
+    const variant = product.variants.find((candidate) => candidate.active)!;
+    const before = variant.stock;
+    const inventory = await request(
+      `/api/v1/admin/inventory?search=${encodeURIComponent(variant.sku)}&page=1&limit=10`,
+      { headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    expect(inventory.status).toBe(200);
+    expect(inventory.body.data.items[0]).toMatchObject({
+      variantId: variant.id,
+      onHand: before,
+    });
+    const missingKey = await request(
+      `/api/v1/admin/inventory/${variant.id}`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ quantity: 3, reason: "Cycle count" }),
+      },
+    );
+    expect(missingKey.status).toBe(400);
+    const key = `inventory-${crypto.randomUUID()}`;
+    const adjust = () =>
+      request(`/api/v1/admin/inventory/${variant.id}`, {
+        method: "PATCH",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "idempotency-key": key,
+        },
+        body: JSON.stringify({ quantity: 3, reason: "Cycle count" }),
+      });
+    const first = await adjust();
+    expect(first.status).toBe(200);
+    expect(first.body.data).toMatchObject({
+      inventory: { onHand: before + 3 },
+      movement: { quantity: 3, reason: "Cycle count" },
+      replayed: false,
+    });
+    const replay = await adjust();
+    expect(replay.status).toBe(200);
+    expect(replay.body.data).toMatchObject({
+      inventory: { onHand: before + 3 },
+      replayed: true,
+    });
+    const conflict = await request(`/api/v1/admin/inventory/${variant.id}`, {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+        "idempotency-key": key,
+      },
+      body: JSON.stringify({ quantity: 4, reason: "Cycle count" }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error.code).toBe("IDEMPOTENCY_CONFLICT");
+    const movements = await request(
+      `/api/v1/admin/inventory/${variant.id}/movements?page=1&limit=10`,
+      { headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    expect(movements.status).toBe(200);
+    expect(movements.body.data.pagination.total).toBe(1);
+    expect(movements.body.data.items[0]).toMatchObject({
+      quantity: 3,
+      reason: "Cycle count",
+    });
+  });
+  it("rolls catalog memory back when database product writes fail", async () => {
+    const rollbackStore = new CommerceStore();
+    const failure = new AppError(
+      503,
+      "PERSISTENCE_UNAVAILABLE",
+      "Database write failed",
+    );
+    const fakePersistence = {
+      connect: async () => undefined,
+      hydrate: async (target: CommerceStore) => seedStore(target),
+      saveProduct: async () => {
+        throw failure;
+      },
+      archiveProduct: async () => {
+        throw failure;
+      },
+    };
+    const isolated = await createApp({
+      config,
+      store: rollbackStore,
+      persistence: fakePersistence as any,
+    });
+    const isolatedServer = isolated.app.listen(0);
+    await new Promise<void>((resolve) =>
+      isolatedServer.once("listening", resolve),
+    );
+    try {
+      const address = isolatedServer.address();
+      if (!address || typeof address === "string")
+        throw new Error("No rollback test port");
+      const isolatedBase = `http://127.0.0.1:${address.port}`;
+      const admin = rollbackStore.findUser("admin@asterrow.local")!;
+      const token = signAccessToken(
+        { sub: admin.id, role: admin.role, permissions: admin.permissions },
+        config.JWT_SECRET,
+      );
+      const isolatedRequest = async (path: string, init: RequestInit) => {
+        const response = await fetch(`${isolatedBase}${path}`, {
+          ...init,
+          headers: { "content-type": "application/json", ...init.headers },
+        });
+        return { status: response.status, body: (await response.json()) as any };
+      };
+      const product = rollbackStore.listProducts()[0]!;
+      const payload = {
+        name: product.name,
+        slug: product.slug,
+        description: product.description,
+        category: product.category,
+        brand: product.brand,
+        status: product.status,
+        taxRate: product.taxRate,
+        hsnCode: product.hsnCode,
+        specifications: product.specifications,
+        seoTitle: product.seoTitle,
+        seoDescription: product.seoDescription,
+        media: product.media,
+        variants: product.variants.map((variant) => ({
+          id: variant.id,
+          sku: variant.sku,
+          title: variant.title,
+          active: variant.active,
+          price: variant.price,
+          mrp: variant.mrp,
+          stock: variant.stock,
+          reserved: variant.reserved,
+          attributes: variant.attributes,
+          weightGrams: variant.weightGrams,
+        })),
+      };
+      const createName = "Rollback-only product";
+      const create = await isolatedRequest("/api/v1/admin/products", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          ...payload,
+          name: createName,
+          slug: `rollback-${crypto.randomUUID()}`,
+          variants: payload.variants.map((variant) => ({
+            ...variant,
+            id: crypto.randomUUID(),
+            sku: `${variant.sku}-${crypto.randomUUID().slice(0, 8)}`,
+          })),
+        }),
+      });
+      expect(create.status).toBe(503);
+      expect(
+        rollbackStore.listProducts().some((candidate) => candidate.name === createName),
+      ).toBe(false);
+
+      const originalName = product.name;
+      const update = await isolatedRequest(
+        `/api/v1/admin/products/${product.id}`,
+        {
+          method: "PUT",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ ...payload, name: "Should be rolled back" }),
+        },
+      );
+      expect(update.status).toBe(503);
+      expect(rollbackStore.getProduct(product.id).name).toBe(originalName);
+
+      const archive = await isolatedRequest(
+        `/api/v1/admin/products/${product.id}`,
+        {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${token}` },
+        },
+      );
+      expect(archive.status).toBe(503);
+      expect(rollbackStore.getProduct(product.id).status).toBe("ACTIVE");
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        isolatedServer.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
   it("persists guest carts and authenticated wishlists", async () => {
     const product = store.listProducts()[0]!,

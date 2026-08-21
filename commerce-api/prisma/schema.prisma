@@ -249,6 +249,7 @@ model InventoryMovement {
   quantity    Int
   reason      String
   referenceId String?
+  idempotencyKey String? @unique
   createdAt   DateTime  @default(now())
   inventory   Inventory @relation(fields: [inventoryId], references: [id])
 

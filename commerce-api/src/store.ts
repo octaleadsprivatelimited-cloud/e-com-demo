@@ -16,6 +16,7 @@ export type StoredVariant = {
   id: string;
   sku: string;
   title: string;
+  active: boolean;
   price: number;
   mrp: number;
   stock: number;
@@ -36,7 +37,7 @@ export type StoredProduct = {
   specifications: Record<string, string>;
   seoTitle?: string;
   seoDescription?: string;
-  media: Array<{ id?: string; url: string; alt: string; type: "IMAGE" | "VIDEO"; position: number; variantId?: string }>;
+  media: Array<{ id: string; url: string; alt: string; type: "IMAGE" | "VIDEO"; position: number; variantId?: string }>;
   variants: StoredVariant[];
   createdAt: string;
   updatedAt: string;
@@ -183,6 +184,18 @@ export class CommerceStore {
   addresses = new Map<string, Array<Record<string, unknown>>>();
   reviews = new Map<string, { id: string; productId: string; userId: string; rating: number; title?: string; body: string; verified: boolean; status: string; createdAt: string }>();
   supportTickets = new Map<string, { id: string; number: string; userId: string; subject: string; priority: string; status: string; createdAt: string; messages: Array<{ id: string; authorId?: string; body: string; internal: boolean; createdAt: string }> }>();
+  inventoryMovements = new Map<
+    string,
+    Array<{
+      id: string;
+      variantId: string;
+      quantity: number;
+      reason: string;
+      referenceId: string;
+      actorId: string;
+      createdAt: string;
+    }>
+  >();
   findUser(email: string) {
     return [...this.users.values()].find(
       (x) => x.email.toLowerCase() === email.toLowerCase(),
@@ -213,6 +226,73 @@ export class CommerceStore {
     input: Omit<StoredProduct, "id" | "createdAt" | "updatedAt">,
     id?: string,
   ) {
+    const variantIds = new Set<string>();
+    const skus = new Set<string>();
+    for (const variant of input.variants) {
+      const normalizedSku = variant.sku.trim().toLowerCase();
+      if (variantIds.has(variant.id) || skus.has(normalizedSku))
+        throw new AppError(
+          409,
+          "DUPLICATE_VARIANT",
+          "Each product variant must have a unique id and SKU",
+        );
+      variantIds.add(variant.id);
+      skus.add(normalizedSku);
+      const idOwner = [...this.products.values()].find(
+        (product) =>
+          product.id !== id &&
+          product.variants.some((candidate) => candidate.id === variant.id),
+      );
+      if (idOwner)
+        throw new AppError(
+          409,
+          "VARIANT_ID_EXISTS",
+          "A product variant with this id already exists",
+        );
+      const owner = [...this.products.values()].find(
+        (product) =>
+          product.id !== id &&
+          product.variants.some(
+            (candidate) => candidate.sku.trim().toLowerCase() === normalizedSku,
+          ),
+      );
+      if (owner)
+        throw new AppError(
+          409,
+          "SKU_EXISTS",
+          `SKU ${variant.sku} is already assigned to another product`,
+        );
+    }
+    const mediaIds = new Set<string>();
+    for (const media of input.media) {
+      if (mediaIds.has(media.id))
+        throw new AppError(
+          409,
+          "DUPLICATE_MEDIA",
+          "Each product media record must have a unique id",
+        );
+      mediaIds.add(media.id);
+      if (
+        media.variantId &&
+        !input.variants.some((variant) => variant.id === media.variantId)
+      )
+        throw new AppError(
+          400,
+          "MEDIA_VARIANT_INVALID",
+          "Product media can only be assigned to a variant in this product",
+        );
+      const mediaOwner = [...this.products.values()].find(
+        (product) =>
+          product.id !== id &&
+          product.media.some((candidate) => candidate.id === media.id),
+      );
+      if (mediaOwner)
+        throw new AppError(
+          409,
+          "MEDIA_ID_EXISTS",
+          "A product media record with this id already exists",
+        );
+    }
     if (
       [...this.products.values()].some(
         (x) => x.slug === input.slug && x.id !== id,
@@ -457,6 +537,62 @@ export class CommerceStore {
     }
     throw new AppError(404, "VARIANT_NOT_FOUND", "Product variant not found");
   }
+  adjustInventory(
+    variantId: string,
+    quantity: number,
+    reason: string,
+    referenceId: string,
+    actorId: string,
+  ) {
+    for (const movements of this.inventoryMovements.values()) {
+      const duplicate = movements.find(
+        (movement) => movement.referenceId === referenceId,
+      );
+      if (!duplicate) continue;
+      if (
+        duplicate.variantId !== variantId ||
+        duplicate.quantity !== quantity ||
+        duplicate.reason !== reason
+      )
+        throw new AppError(
+          409,
+          "IDEMPOTENCY_CONFLICT",
+          "This idempotency key was already used for another inventory adjustment",
+        );
+      const { variant } = this.getVariant(variantId);
+      return { variant, movement: duplicate, replayed: true };
+    }
+    const { variant } = this.getVariant(variantId);
+    if (variant.stock + quantity < variant.reserved)
+      throw new AppError(
+        409,
+        "INVENTORY_ADJUSTMENT_INVALID",
+        "Adjustment would reduce stock below reserved quantity",
+      );
+    variant.stock += quantity;
+    const movement = {
+      id: crypto.randomUUID(),
+      variantId,
+      quantity,
+      reason,
+      referenceId,
+      actorId,
+      createdAt: new Date().toISOString(),
+    };
+    const movements = this.inventoryMovements.get(variantId) || [];
+    movements.unshift(movement);
+    this.inventoryMovements.set(variantId, movements);
+    this.auditLogs.unshift({
+      id: crypto.randomUUID(),
+      userId: actorId,
+      action: "inventory.adjusted",
+      resource: "variant",
+      resourceId: variantId,
+      after: { onHand: variant.stock, quantity, reason, referenceId },
+      createdAt: movement.createdAt,
+    });
+    return { variant, movement, replayed: false };
+  }
 }
 export function seedStore(store: CommerceStore) {
   if (store.products.size) return;
@@ -582,6 +718,7 @@ export function seedStore(store: CommerceStore) {
         id: crypto.randomUUID(),
         sku: `AR-${p.slug.slice(0, 3).toUpperCase()}-${i + 1}`,
         title: v,
+        active: true,
         price: p.prices[i]!,
         mrp: Math.round(p.prices[i]! * 1.15),
         stock: 25,

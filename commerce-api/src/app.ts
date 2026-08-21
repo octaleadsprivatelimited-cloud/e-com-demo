@@ -27,6 +27,8 @@ import {
   integrationSchema,
   inventoryAdjustmentSchema,
   orderStatusSchema,
+  productMediaOrderSchema,
+  productMediaUpdateSchema,
   productSchema,
   registerSchema,
   refundSchema,
@@ -74,6 +76,14 @@ import { verifyGoogleIdToken } from "./google-auth.js";
 import { convertProductImage, productImageUpload } from "./image-upload.js";
 import { generateInvoicePdf } from "./invoice.js";
 import { adminOrderDto, adminRefundDto } from "./admin-orders.js";
+import {
+  adminProductDetailDto,
+  listAdminInventory,
+  listAdminProducts,
+  paginatedMovements,
+  queryInteger,
+  storefrontProductDto,
+} from "./admin-products.js";
 
 const ok = (
   res: express.Response,
@@ -564,10 +574,10 @@ export async function createApp(overrides?: {
         ranked = products
           .filter((product) => !excluded.has(product.id))
           .map((product) => ({
-            product,
+            product: storefrontProductDto(product),
             score:
               (affinity.get(product.category) || 0) * 10 +
-              product.variants.reduce(
+              product.variants.filter((variant) => variant.active).reduce(
                 (sum, variant) => sum + variant.stock - variant.reserved,
                 0,
               ) /
@@ -1253,12 +1263,16 @@ export async function createApp(overrides?: {
               .toLowerCase()
               .includes(q)) &&
           (!category || x.category === category),
-      );
+      )
+      .map(storefrontProductDto);
     return ok(res, data);
   });
-  app.get("/api/v1/products/:id", (req, res) =>
-    ok(res, store.getProduct(String(req.params.id))),
-  );
+  app.get("/api/v1/products/:id", (req, res) => {
+    const product = store.getProduct(String(req.params.id));
+    if (product.status !== "ACTIVE")
+      throw new AppError(404, "PRODUCT_NOT_FOUND", "Product not found");
+    return ok(res, storefrontProductDto(product));
+  });
   app.get("/api/v1/products/:id/reviews", async (req, res) => {
     const productId = String(req.params.id);
     store.getProduct(productId);
@@ -1288,7 +1302,15 @@ export async function createApp(overrides?: {
                 name: product.name,
                 slug: product.slug,
                 media: product.media
-                  .filter((item) => item.type === "IMAGE")
+                  .filter(
+                    (item) =>
+                      item.type === "IMAGE" &&
+                      (!item.variantId ||
+                        product.variants.some(
+                          (variant) =>
+                            variant.active && variant.id === item.variantId,
+                        )),
+                  )
                   .sort((left, right) => left.position - right.position)
                   .slice(0, 1)
                   .map(({ url, alt }) => ({ url, alt })),
@@ -1350,19 +1372,131 @@ export async function createApp(overrides?: {
       return ok(res, review, "Review submitted for moderation", 201);
     },
   );
+  app.get(
+    "/api/v1/admin/products",
+    auth,
+    authorize("products:read"),
+    (req, res) => {
+      const status = String(req.query.status || "ALL").toUpperCase();
+      if (!["ALL", "DRAFT", "ACTIVE", "ARCHIVED"].includes(status))
+        throw new AppError(400, "INVALID_QUERY", "Unknown product status");
+      const sortBy = String(req.query.sortBy || "updatedAt");
+      if (!["updatedAt", "name", "inventory"].includes(sortBy))
+        throw new AppError(400, "INVALID_QUERY", "Unknown product sort field");
+      const sortOrder = String(req.query.sortOrder || "desc").toLowerCase();
+      if (!["asc", "desc"].includes(sortOrder))
+        throw new AppError(400, "INVALID_QUERY", "Unknown product sort order");
+      return ok(
+        res,
+        listAdminProducts(store.listProducts(), {
+          search: String(req.query.search || "").slice(0, 200),
+          status: status as "ALL" | "DRAFT" | "ACTIVE" | "ARCHIVED",
+          category: String(req.query.category || "").slice(0, 100),
+          sortBy: sortBy as "updatedAt" | "name" | "inventory",
+          sortOrder: sortOrder as "asc" | "desc",
+          page: queryInteger(req.query.page, 1, 1, 1000),
+          limit: queryInteger(req.query.limit, 25, 1, 100),
+        }),
+      );
+    },
+  );
+  app.get(
+    "/api/v1/admin/categories",
+    auth,
+    authorize("products:read"),
+    (req, res) => {
+      const search = String(req.query.search || "").trim().toLowerCase();
+      const categories = new Map<
+        string,
+        { name: string; slug: string; productCount: number; activeProductCount: number }
+      >();
+      for (const product of store.listProducts()) {
+        const key = product.category.toLowerCase();
+        const current = categories.get(key) || {
+          name: product.category,
+          slug: product.category
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-|-$/g, ""),
+          productCount: 0,
+          activeProductCount: 0,
+        };
+        current.productCount++;
+        if (product.status === "ACTIVE") current.activeProductCount++;
+        categories.set(key, current);
+      }
+      return ok(res, {
+        items: [...categories.values()]
+          .filter(
+            (category) =>
+              !search ||
+              `${category.name} ${category.slug}`.toLowerCase().includes(search),
+          )
+          .sort((left, right) => left.name.localeCompare(right.name)),
+      });
+    },
+  );
+  app.get(
+    "/api/v1/admin/products/:id",
+    auth,
+    authorize("products:read"),
+    (req, res) =>
+      ok(
+        res,
+        adminProductDetailDto(store.getProduct(String(req.params.id))),
+      ),
+  );
   app.post(
     "/api/v1/admin/products",
     auth,
     authorize("products:create"),
     validate(productSchema),
     async (req, res) => {
-      const variants = req.body.variants.map((x: Record<string, unknown>) => ({
-        ...x,
-        id: crypto.randomUUID(),
-      }));
-      const product = store.saveProduct({ ...req.body, variants });
-      await persistence?.saveProduct(product);
-      return ok(res, product, "Product created", 201);
+      const variants = req.body.variants.map(
+        (entry: Record<string, unknown>) => ({
+          ...entry,
+          id: String(entry.id || crypto.randomUUID()),
+          active: entry.active !== false,
+          reserved: 0,
+        }),
+      );
+      if (
+        req.body.status === "ACTIVE" &&
+        !variants.some((variant: { active: boolean }) => variant.active)
+      )
+        throw new AppError(
+          409,
+          "ACTIVE_VARIANT_REQUIRED",
+          "An active product must have at least one active variant",
+        );
+      const variantIds = new Set(variants.map((variant: { id: string }) => variant.id));
+      const media = (req.body.media || [])
+        .slice()
+        .sort(
+          (left: { position: number }, right: { position: number }) =>
+            left.position - right.position,
+        )
+        .map((entry: Record<string, unknown>, position: number) => {
+          if (entry.variantId && !variantIds.has(String(entry.variantId)))
+            throw new AppError(
+              400,
+              "MEDIA_VARIANT_INVALID",
+              "Product media can only be assigned to a variant in this product",
+            );
+          return {
+            ...entry,
+            id: String(entry.id || crypto.randomUUID()),
+            position,
+          };
+        });
+      const product = store.saveProduct({ ...req.body, media, variants });
+      try {
+        await persistence?.saveProduct(product);
+      } catch (error) {
+        store.products.delete(product.id);
+        throw error;
+      }
+      return ok(res, adminProductDetailDto(product), "Product created", 201);
     },
   );
   app.post(
@@ -1374,6 +1508,16 @@ export async function createApp(overrides?: {
       const product = store.getProduct(String(req.params.id));
       if (!req.file)
         throw new AppError(400, "IMAGE_REQUIRED", "Choose an image to upload");
+      const variantId = String(req.body.variantId || "");
+      if (
+        variantId &&
+        !product.variants.some((variant) => variant.id === variantId)
+      )
+        throw new AppError(
+          400,
+          "MEDIA_VARIANT_INVALID",
+          "Product media can only be assigned to a variant in this product",
+        );
       const converted = await convertProductImage(
           req.file.buffer,
           config.UPLOAD_DIR,
@@ -1388,18 +1532,26 @@ export async function createApp(overrides?: {
               .slice(0, 200) || product.name,
           type: "IMAGE" as const,
           position: Number.isFinite(Number(req.body.position))
-            ? Math.max(0, Math.min(1000, Number(req.body.position)))
+            ? Math.max(
+                0,
+                Math.min(product.media.length, Math.trunc(Number(req.body.position))),
+              )
             : product.media.length,
+          ...(variantId ? { variantId } : {}),
         };
-      product.media.push(media);
-      product.media.sort((a, b) => a.position - b.position);
+      const orderedIds = product.media.map((item) => item.id);
+      orderedIds.splice(media.position, 0, media.id);
       await persistence?.addProductMedia({
         id: media.id,
         productId: product.id,
         url: media.url,
         alt: media.alt,
         position: media.position,
-      });
+        variantId: media.variantId,
+      }, orderedIds);
+      product.media.splice(media.position, 0, media);
+      product.media.forEach((item, position) => (item.position = position));
+      product.updatedAt = new Date().toISOString();
       return ok(
         res,
         { media, ...converted },
@@ -1409,24 +1561,189 @@ export async function createApp(overrides?: {
     },
   );
   app.put(
+    "/api/v1/admin/products/:id/media/order",
+    auth,
+    authorize("products:update"),
+    validate(productMediaOrderSchema),
+    async (req, res) => {
+      const product = store.getProduct(String(req.params.id));
+      const requested = req.body.mediaIds as string[];
+      if (
+        new Set(requested).size !== requested.length ||
+        requested.length !== product.media.length ||
+        requested.some(
+          (id) => !product.media.some((candidate) => candidate.id === id),
+        )
+      )
+        throw new AppError(
+          400,
+          "MEDIA_ORDER_INVALID",
+          "Media ordering must contain every current media id exactly once",
+        );
+      await persistence?.reorderProductMedia(product.id, requested);
+      const positions = new Map(requested.map((id, position) => [id, position]));
+      product.media.sort(
+        (left, right) => positions.get(left.id)! - positions.get(right.id)!,
+      );
+      product.media.forEach((item, position) => (item.position = position));
+      product.updatedAt = new Date().toISOString();
+      return ok(res, adminProductDetailDto(product).media, "Media reordered");
+    },
+  );
+  app.patch(
+    "/api/v1/admin/products/:id/media/:mediaId",
+    auth,
+    authorize("products:update"),
+    validate(productMediaUpdateSchema),
+    async (req, res) => {
+      const product = store.getProduct(String(req.params.id));
+      const media = product.media.find(
+        (candidate) => candidate.id === String(req.params.mediaId),
+      );
+      if (!media)
+        throw new AppError(404, "MEDIA_NOT_FOUND", "Product media not found");
+      if (
+        req.body.variantId &&
+        !product.variants.some(
+          (variant) => variant.id === String(req.body.variantId),
+        )
+      )
+        throw new AppError(
+          400,
+          "MEDIA_VARIANT_INVALID",
+          "Product media can only be assigned to a variant in this product",
+        );
+      await persistence?.updateProductMedia(product.id, media.id, req.body);
+      if (req.body.alt !== undefined) media.alt = req.body.alt;
+      if (req.body.variantId === null) delete media.variantId;
+      else if (req.body.variantId !== undefined)
+        media.variantId = req.body.variantId;
+      product.updatedAt = new Date().toISOString();
+      return ok(res, media, "Media updated");
+    },
+  );
+  app.delete(
+    "/api/v1/admin/products/:id/media/:mediaId",
+    auth,
+    authorize("products:update"),
+    async (req, res) => {
+      const product = store.getProduct(String(req.params.id));
+      const index = product.media.findIndex(
+        (candidate) => candidate.id === String(req.params.mediaId),
+      );
+      if (index < 0)
+        throw new AppError(404, "MEDIA_NOT_FOUND", "Product media not found");
+      const media = product.media[index]!;
+      await persistence?.deleteProductMedia(product.id, media.id);
+      product.media.splice(index, 1);
+      product.media.forEach((item, position) => (item.position = position));
+      product.updatedAt = new Date().toISOString();
+      await persistence?.reorderProductMedia(
+        product.id,
+        product.media.map((item) => item.id),
+      );
+      return ok(res, { id: media.id, deleted: true }, "Media removed");
+    },
+  );
+  app.put(
     "/api/v1/admin/products/:id",
     auth,
     authorize("products:update"),
     validate(productSchema),
     async (req, res) => {
-      const existing = store.getProduct(String(req.params.id)),
-        variants = req.body.variants.map(
-          (x: Record<string, unknown>, i: number) => ({
-            ...x,
-            id: existing.variants[i]?.id || crypto.randomUUID(),
-          }),
+      const existing = store.getProduct(String(req.params.id));
+      const usedVariantIds = new Set<string>();
+      const variants = req.body.variants.map(
+        (entry: Record<string, unknown>) => {
+          const requestedId = entry.id ? String(entry.id) : undefined;
+          const current = requestedId
+            ? existing.variants.find((variant) => variant.id === requestedId)
+            : existing.variants.find(
+                (variant) =>
+                  !usedVariantIds.has(variant.id) &&
+                  variant.sku.toLowerCase() === String(entry.sku).toLowerCase(),
+              );
+          if (requestedId && !current)
+            throw new AppError(
+              400,
+              "VARIANT_ID_INVALID",
+              "A submitted variant id does not belong to this product",
+            );
+          const id = current?.id || crypto.randomUUID();
+          if (usedVariantIds.has(id))
+            throw new AppError(
+              409,
+              "DUPLICATE_VARIANT",
+              "Each product variant can only be submitted once",
+            );
+          usedVariantIds.add(id);
+          return {
+            ...entry,
+            id,
+            active: entry.active !== false,
+            stock: current?.stock ?? Number(entry.stock),
+            reserved: current?.reserved ?? 0,
+          };
+        },
+      );
+      for (const variant of existing.variants) {
+        if (!usedVariantIds.has(variant.id))
+          variants.push({ ...variant, active: false });
+      }
+      if (
+        req.body.status === "ACTIVE" &&
+        !variants.some((variant: { active: boolean }) => variant.active)
+      )
+        throw new AppError(
+          409,
+          "ACTIVE_VARIANT_REQUIRED",
+          "An active product must have at least one active variant",
         );
+      const variantIds = new Set(
+        variants.map((variant: { id: string }) => variant.id),
+      );
+      const media =
+        req.body.media === undefined
+          ? existing.media
+          : req.body.media
+              .slice()
+              .sort(
+                (left: { position: number }, right: { position: number }) =>
+                  left.position - right.position,
+              )
+              .map((entry: Record<string, unknown>, position: number) => {
+                if (
+                  entry.id &&
+                  !existing.media.some((candidate) => candidate.id === entry.id)
+                )
+                  throw new AppError(
+                    400,
+                    "MEDIA_ID_INVALID",
+                    "A submitted media id does not belong to this product",
+                  );
+                if (entry.variantId && !variantIds.has(String(entry.variantId)))
+                  throw new AppError(
+                    400,
+                    "MEDIA_VARIANT_INVALID",
+                    "Product media can only be assigned to a variant in this product",
+                  );
+                return {
+                  ...entry,
+                  id: String(entry.id || crypto.randomUUID()),
+                  position,
+                };
+              });
       const product = store.saveProduct(
-        { ...req.body, variants },
+        { ...req.body, media, variants },
         String(req.params.id),
       );
-      await persistence?.saveProduct(product);
-      return ok(res, product, "Product updated");
+      try {
+        await persistence?.saveProduct(product);
+      } catch (error) {
+        store.products.set(existing.id, existing);
+        throw error;
+      }
+      return ok(res, adminProductDetailDto(product), "Product updated");
     },
   );
   app.delete(
@@ -1434,9 +1751,15 @@ export async function createApp(overrides?: {
     auth,
     authorize("products:delete"),
     async (req, res) => {
-      const product = store.deleteProduct(String(req.params.id));
-      await persistence?.archiveProduct(product.id);
-      return ok(res, product, "Product archived");
+      const existing = store.getProduct(String(req.params.id));
+      const product = store.deleteProduct(existing.id);
+      try {
+        await persistence?.archiveProduct(product.id);
+      } catch (error) {
+        store.products.set(existing.id, existing);
+        throw error;
+      }
+      return ok(res, adminProductDetailDto(product), "Product archived");
     },
   );
   const cartKey = (req: express.Request, res: express.Response) => {
@@ -1456,11 +1779,15 @@ export async function createApp(overrides?: {
         items = store.carts.get(key) || new Map<string, number>();
       return ok(
         res,
-        [...items].map(([variantId, quantity]) => ({
-          ...store.getVariant(variantId),
-          variantId,
-          quantity,
-        })),
+        [...items].map(([variantId, quantity]) => {
+          const { product, variant } = store.getVariant(variantId);
+          return {
+            product: storefrontProductDto(product),
+            variant,
+            variantId,
+            quantity,
+          };
+        }),
       );
     },
   );
@@ -1470,8 +1797,17 @@ export async function createApp(overrides?: {
     validate(cartItemSchema),
     async (req, res) => {
       const key = cartKey(req, res),
-        { variant } = store.getVariant(req.body.variantId),
+        { product, variant } = store.getVariant(req.body.variantId),
         items = store.carts.get(key) || new Map<string, number>();
+      if (
+        req.body.quantity > 0 &&
+        (product.status !== "ACTIVE" || !variant.active)
+      )
+        throw new AppError(
+          409,
+          "PRODUCT_UNAVAILABLE",
+          `${product.name} is no longer available`,
+        );
       if (req.body.quantity > variant.stock - variant.reserved)
         throw new AppError(
           409,
@@ -1497,7 +1833,7 @@ export async function createApp(overrides?: {
     ok(
       res,
       [...(store.wishlists.get(req.principal!.sub) || new Set())].map((id) =>
-        store.getProduct(id),
+        storefrontProductDto(store.getProduct(id)),
       ),
     ),
   );
@@ -1595,7 +1931,7 @@ export async function createApp(overrides?: {
       weight = 0;
     const lines = input.lines.map((line) => {
       const { product, variant } = store.getVariant(line.variantId);
-      if (product.status !== "ACTIVE")
+      if (product.status !== "ACTIVE" || !variant.active)
         throw new AppError(
           409,
           "PRODUCT_UNAVAILABLE",
@@ -2513,25 +2849,53 @@ export async function createApp(overrides?: {
     "/api/v1/admin/inventory",
     auth,
     authorize("inventory:read"),
-    (_req, res) =>
-      ok(
+    (req, res) => {
+      const lowStockValue = String(req.query.lowStock || "").toLowerCase();
+      if (lowStockValue && !["true", "false"].includes(lowStockValue))
+        throw new AppError(400, "INVALID_QUERY", "lowStock must be true or false");
+      return ok(
         res,
-        store
-          .listProducts()
-          .flatMap((product) =>
-            product.variants.map((variant) => ({
-              productId: product.id,
-              product: product.name,
-              variantId: variant.id,
-              sku: variant.sku,
-              title: variant.title,
-              onHand: variant.stock,
-              reserved: variant.reserved,
-              available: variant.stock - variant.reserved,
-              lowStock: variant.stock - variant.reserved <= 5,
-            })),
-          ),
-      ),
+        listAdminInventory(store.listProducts(), {
+          search: String(req.query.search || "").slice(0, 200),
+          productId: String(req.query.productId || "").slice(0, 100),
+          lowStock: lowStockValue === "true",
+          page: queryInteger(req.query.page, 1, 1, 1000),
+          limit: queryInteger(req.query.limit, 25, 1, 100),
+        }),
+      );
+    },
+  );
+  app.get(
+    "/api/v1/admin/inventory/:variantId/movements",
+    auth,
+    authorize("inventory:read"),
+    async (req, res) => {
+      const variantId = String(req.params.variantId);
+      store.getVariant(variantId);
+      const page = queryInteger(req.query.page, 1, 1, 1000);
+      const limit = queryInteger(req.query.limit, 25, 1, 100);
+      const movements = persistence
+        ? (await persistence.listInventoryMovements(variantId)).map(
+            (movement) => ({
+              id: movement.id,
+              quantity: movement.quantity,
+              reason: movement.reason,
+              referenceId: movement.referenceId || undefined,
+              createdAt: movement.createdAt.toISOString(),
+            }),
+          )
+        : (store.inventoryMovements.get(variantId) || []).map((movement) => ({
+            id: movement.id,
+            quantity: movement.quantity,
+            reason: movement.reason,
+            referenceId: movement.referenceId,
+            createdAt: movement.createdAt,
+          }));
+      return ok(res, {
+        variantId,
+        ...paginatedMovements(movements, page, limit),
+      });
+    },
   );
   app.patch(
     "/api/v1/admin/inventory/:variantId",
@@ -2539,29 +2903,72 @@ export async function createApp(overrides?: {
     authorize("inventory:update"),
     validate(inventoryAdjustmentSchema),
     async (req, res) => {
-      const { variant } = store.getVariant(String(req.params.variantId));
-      if (variant.stock + req.body.quantity < variant.reserved)
+      const variantId = String(req.params.variantId);
+      const { variant } = store.getVariant(variantId);
+      const key = String(req.headers["idempotency-key"] || "");
+      if (key.length < 8 || key.length > 100)
         throw new AppError(
-          409,
-          "INVENTORY_ADJUSTMENT_INVALID",
-          "Adjustment would reduce stock below reserved quantity",
+          400,
+          "IDEMPOTENCY_KEY_REQUIRED",
+          "A valid Idempotency-Key header is required",
         );
-      await persistence?.adjustInventory(
-        variant.id,
-        req.body.quantity,
-        req.body.reason,
-        req.principal!.sub,
-      );
-      variant.stock += req.body.quantity;
+      const operationKey = `inventory:${key}`;
+      let movement:
+        | {
+            id: string;
+            quantity: number;
+            reason: string;
+            referenceId?: string | null;
+            createdAt: Date | string;
+          }
+        | undefined;
+      let replayed = false;
+      if (persistence) {
+        const result = await persistence.adjustInventory(
+            variant.id,
+            req.body.quantity,
+            req.body.reason,
+            req.principal!.sub,
+            operationKey,
+          );
+        variant.stock = result.inventory.onHand;
+        movement = result.movement;
+        replayed = result.replayed;
+      } else {
+        const result = store.adjustInventory(
+            variant.id,
+            req.body.quantity,
+            req.body.reason,
+            operationKey,
+            req.principal!.sub,
+          );
+        movement = result.movement;
+        replayed = result.replayed;
+      }
       return ok(
         res,
         {
-          variantId: variant.id,
-          onHand: variant.stock,
-          reserved: variant.reserved,
-          available: variant.stock - variant.reserved,
+          inventory: {
+            variantId: variant.id,
+            onHand: variant.stock,
+            reserved: variant.reserved,
+            available: variant.stock - variant.reserved,
+            lowStockAt: 5,
+            lowStock: variant.stock - variant.reserved <= 5,
+          },
+          movement: {
+            id: movement.id,
+            quantity: movement.quantity,
+            reason: movement.reason,
+            referenceId: movement.referenceId || undefined,
+            createdAt:
+              movement.createdAt instanceof Date
+                ? movement.createdAt.toISOString()
+                : movement.createdAt,
+          },
+          replayed,
         },
-        "Inventory adjusted",
+        replayed ? "Inventory adjustment replayed" : "Inventory adjusted",
       );
     },
   );

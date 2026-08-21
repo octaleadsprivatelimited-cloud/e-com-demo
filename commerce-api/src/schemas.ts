@@ -12,8 +12,10 @@ export const mobileOtpVerifySchema=mobileOtpRequestSchema.extend({code:z.string(
 export const googleLoginSchema=z.object({credential:z.string().min(100).max(10000)});
 const variant = z
   .object({
+    id: z.string().uuid().optional(),
     sku: z.string().trim().min(3).max(80),
     title: z.string().trim().min(1).max(120),
+    active: z.boolean().default(true),
     price: z.number().positive().max(100000000),
     mrp: z.number().positive().max(100000000),
     stock: z.number().int().min(0).max(1000000),
@@ -41,14 +43,26 @@ export const productSchema = z.object({
   seoTitle: z.string().trim().max(70).optional(),
   seoDescription: z.string().trim().max(170).optional(),
   media: z.array(z.object({
+    id: z.string().uuid().optional(),
     url: z.string().url().max(2000),
     alt: z.string().trim().min(1).max(200),
     type: z.enum(["IMAGE", "VIDEO"]).default("IMAGE"),
     position: z.number().int().min(0).max(1000).default(0),
     variantId: z.string().uuid().optional(),
-  })).max(30).default([]),
+  })).max(30).optional(),
   variants: z.array(variant).min(1).max(200),
 });
+export const productMediaOrderSchema = z.object({
+  mediaIds: z.array(z.string().uuid()).max(30),
+});
+export const productMediaUpdateSchema = z
+  .object({
+    alt: z.string().trim().min(1).max(200).optional(),
+    variantId: z.string().uuid().nullable().optional(),
+  })
+  .refine((value) => value.alt !== undefined || value.variantId !== undefined, {
+    message: "Provide an alt value or variant assignment",
+  });
 const checkoutLinesSchema = z
   .array(
     z.object({

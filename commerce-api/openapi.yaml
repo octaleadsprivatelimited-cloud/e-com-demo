@@ -185,14 +185,160 @@ paths:
           "404": { $ref: "#/components/responses/Error" },
         }
   /api/v1/admin/products:
+    get:
+      summary: Search and paginate the complete admin catalog
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: query, name: search, schema: { type: string, maxLength: 200 } }
+        - { in: query, name: status, schema: { type: string, enum: [ALL, DRAFT, ACTIVE, ARCHIVED], default: ALL } }
+        - { in: query, name: category, schema: { type: string } }
+        - { in: query, name: sortBy, schema: { type: string, enum: [updatedAt, name, inventory], default: updatedAt } }
+        - { in: query, name: sortOrder, schema: { type: string, enum: [asc, desc], default: desc } }
+        - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 1000, default: 1 } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        "200": { description: Paginated product summaries and catalog facets }
+        "403": { $ref: "#/components/responses/Error" }
     post:
       summary: Create product with variants
       security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/ProductWrite" } }
       responses:
         {
           "201": { description: Created },
           "403": { $ref: "#/components/responses/Error" },
         }
+  /api/v1/admin/products/{id}:
+    get:
+      summary: Read a complete admin product, including inactive variants and inventory
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Admin product detail }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      summary: Replace product content while preserving stable variant and media identities
+      description: Existing variants omitted from the request are deactivated, not deleted. Existing inventory is only changed through the inventory adjustment endpoint.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/ProductWrite" } }
+      responses:
+        "200": { description: Product updated }
+        "409": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Archive a product without deleting its variants or order references
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Product archived }
+  /api/v1/admin/products/{id}/media/upload:
+    post:
+      summary: Upload and convert a product image to WebP
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image: { type: string, format: binary }
+                alt: { type: string, maxLength: 200 }
+                position: { type: integer, minimum: 0 }
+                variantId: { type: string, format: uuid }
+      responses:
+        "201": { description: Optimized image attached }
+        "415": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/products/{id}/media/order:
+    put:
+      summary: Atomically replace the media display order
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mediaIds]
+              properties:
+                mediaIds:
+                  type: array
+                  maxItems: 30
+                  items: { type: string, format: uuid }
+      responses:
+        "200": { description: Ordered media }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/products/{id}/media/{mediaId}:
+    patch:
+      summary: Update media alt text or variant assignment
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { in: path, name: mediaId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Media updated }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Remove media and compact remaining positions
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { in: path, name: mediaId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Media removed }
+  /api/v1/admin/categories:
+    get:
+      summary: List catalog categories and product counts
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: query, name: search, schema: { type: string } }
+      responses:
+        "200": { description: Category summaries }
+  /api/v1/admin/inventory:
+    get:
+      summary: Search and paginate variant inventory
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: query, name: search, schema: { type: string } }
+        - { in: query, name: productId, schema: { type: string, format: uuid } }
+        - { in: query, name: lowStock, schema: { type: boolean } }
+        - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 1000, default: 1 } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        "200": { description: Paginated inventory rows }
+  /api/v1/admin/inventory/{variantId}:
+    patch:
+      summary: Idempotently adjust inventory and write an audit movement
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: variantId, required: true, schema: { type: string, format: uuid } }
+        - { in: header, name: Idempotency-Key, required: true, schema: { type: string, minLength: 8, maxLength: 100 } }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/InventoryAdjustment" } }
+      responses:
+        "200": { description: Inventory, movement, and replay indicator }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/inventory/{variantId}/movements:
+    get:
+      summary: Read paginated inventory movement history
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: variantId, required: true, schema: { type: string, format: uuid } }
+        - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 1000, default: 1 } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        "200": { description: Paginated inventory movements }
   /api/v1/admin/orders:
     get:
       summary: List sanitized live order-operation records
@@ -326,6 +472,57 @@ components:
             properties:
               { name: { type: string, minLength: 2, maxLength: 100 } },
           }
+    ProductWrite:
+      type: object
+      required: [name, slug, description, category, status, taxRate, variants]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 200 }
+        slug: { type: string, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }
+        description: { type: string, minLength: 10, maxLength: 20000 }
+        category: { type: string, minLength: 2, maxLength: 100 }
+        brand: { type: string, maxLength: 100 }
+        status: { type: string, enum: [DRAFT, ACTIVE, ARCHIVED] }
+        taxRate: { type: number, minimum: 0, maximum: 100 }
+        hsnCode: { type: string, pattern: "^[0-9]{4,8}$" }
+        specifications: { type: object, additionalProperties: { type: string } }
+        seoTitle: { type: string, maxLength: 70 }
+        seoDescription: { type: string, maxLength: 170 }
+        media:
+          type: array
+          maxItems: 30
+          items:
+            type: object
+            required: [url, alt, type, position]
+            properties:
+              id: { type: string, format: uuid, description: Preserve this value when updating existing media. }
+              url: { type: string, format: uri }
+              alt: { type: string, maxLength: 200 }
+              type: { type: string, enum: [IMAGE, VIDEO] }
+              position: { type: integer, minimum: 0 }
+              variantId: { type: string, format: uuid }
+        variants:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            type: object
+            required: [sku, title, price, mrp, stock, attributes, weightGrams]
+            properties:
+              id: { type: string, format: uuid, description: Preserve this value for an existing variant; omit it for a new variant. }
+              sku: { type: string, minLength: 3, maxLength: 80 }
+              title: { type: string, minLength: 1, maxLength: 120 }
+              active: { type: boolean, default: true }
+              price: { type: number, exclusiveMinimum: 0 }
+              mrp: { type: number, exclusiveMinimum: 0 }
+              stock: { type: integer, minimum: 0, description: Initial stock for new variants; ignored for existing variants. }
+              attributes: { type: object, additionalProperties: { type: string } }
+              weightGrams: { type: integer, minimum: 1 }
+    InventoryAdjustment:
+      type: object
+      required: [quantity, reason]
+      properties:
+        quantity: { type: integer, minimum: -1000000, maximum: 1000000, not: { const: 0 } }
+        reason: { type: string, minLength: 3, maxLength: 200 }
     Checkout:
       type: object
       required: [lines, postalCode, contact, shippingAddress, paymentProvider]

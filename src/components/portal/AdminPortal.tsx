@@ -47,6 +47,7 @@ import { toast, Toaster } from "sonner";
 import { useLocation } from "@tanstack/react-router";
 import { defaultStorefrontConfig, type StorefrontConfig } from "@/lib/storefront-config";
 import { emptyPromotions, type PromotionConfig } from "@/lib/promotions";
+import { AdminInventoryWorkspace, AdminProductsWorkspace } from "./AdminProductsWorkspace";
 
 const nav: [string, React.ReactNode][] = [
   ["Overview", <LayoutDashboard />],
@@ -947,7 +948,7 @@ export function AdminPortal() {
         onNavigate={(label) => startTransition(() => setActive(label))}
       >
         {active === "Products" ? (
-          <VariantEditor />
+          <AdminProductsWorkspace />
         ) : active === "Integrations" ? (
           <Integrations />
         ) : active === "Overview" ? (
@@ -958,6 +959,8 @@ export function AdminPortal() {
           <PromotionStudio />
         ) : active === "Orders" ? (
           <AdminOrdersPanel />
+        ) : active === "Inventory" ? (
+          <AdminInventoryWorkspace />
         ) : (
           <ModuleView module={active} />
         )}

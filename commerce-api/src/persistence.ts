@@ -235,6 +235,7 @@ export class PrismaPersistence {
           id: variant.id,
           sku: variant.sku,
           title: variant.title,
+          active: variant.active,
           price: number(variant.price),
           mrp: number(variant.mrp),
           stock: variant.inventory?.onHand || 0,
@@ -443,7 +444,8 @@ export class PrismaPersistence {
           },
         })
       : undefined;
-    await this.db.$transaction(async (tx) => {
+    try {
+      await this.db.$transaction(async (tx) => {
       await tx.product.upsert({
         where: { id: product.id },
         update: {
@@ -458,6 +460,7 @@ export class PrismaPersistence {
           specifications: product.specifications,
           seoTitle: product.seoTitle,
           seoDescription: product.seoDescription,
+          deletedAt: null,
         },
         create: {
           id: product.id,
@@ -474,28 +477,42 @@ export class PrismaPersistence {
           seoDescription: product.seoDescription,
         },
       });
+      const variantIds = product.variants.map((variant) => variant.id);
+      await tx.productVariant.updateMany({
+        where: {
+          productId: product.id,
+          ...(variantIds.length ? { id: { notIn: variantIds } } : {}),
+        },
+        data: { active: false },
+      });
       for (const variant of product.variants) {
-        await tx.productVariant.upsert({
-          where: { id: variant.id },
-          update: {
-            sku: variant.sku,
-            title: variant.title,
-            price: variant.price,
-            mrp: variant.mrp,
-            weightGrams: variant.weightGrams,
-            attributes: variant.attributes,
-          },
-          create: {
-            id: variant.id,
-            productId: product.id,
-            sku: variant.sku,
-            title: variant.title,
-            price: variant.price,
-            mrp: variant.mrp,
-            weightGrams: variant.weightGrams,
-            attributes: variant.attributes,
-          },
+        const existingVariant = await tx.productVariant.findFirst({
+          where: { id: variant.id, productId: product.id },
+          select: { id: true },
         });
+        const variantData = {
+          sku: variant.sku,
+          title: variant.title,
+          price: variant.price,
+          mrp: variant.mrp,
+          weightGrams: variant.weightGrams,
+          attributes: variant.attributes,
+          active: variant.active,
+        };
+        if (existingVariant) {
+          await tx.productVariant.update({
+            where: { id: variant.id },
+            data: variantData,
+          });
+        } else {
+          await tx.productVariant.create({
+            data: {
+              id: variant.id,
+              productId: product.id,
+              ...variantData,
+            },
+          });
+        }
         await tx.inventory.upsert({
           where: { variantId: variant.id },
           update: { onHand: variant.stock, reserved: variant.reserved },
@@ -506,27 +523,66 @@ export class PrismaPersistence {
           },
         });
       }
-      await tx.productMedia.deleteMany({ where: { productId: product.id } });
-      if (product.media.length) {
-        const allowedVariantIds = new Set(
-          product.variants.map((variant) => variant.id),
-        );
-        await tx.productMedia.createMany({
-          data: product.media.map((item) => ({
-            id: item.id || crypto.randomUUID(),
-            productId: product.id,
-            variantId:
-              item.variantId && allowedVariantIds.has(item.variantId)
-                ? item.variantId
-                : null,
-            url: item.url,
-            alt: item.alt,
-            type: item.type,
-            position: item.position,
-          })),
+      const mediaIds = product.media.map((item) => item.id);
+      await tx.productMedia.deleteMany({
+        where: {
+          productId: product.id,
+          ...(mediaIds.length ? { id: { notIn: mediaIds } } : {}),
+        },
+      });
+      const allowedVariantIds = new Set(
+        product.variants.map((variant) => variant.id),
+      );
+      for (const item of product.media) {
+        const existingMedia = await tx.productMedia.findFirst({
+          where: { id: item.id, productId: product.id },
+          select: { id: true },
         });
+        const mediaData = {
+          variantId:
+            item.variantId && allowedVariantIds.has(item.variantId)
+              ? item.variantId
+              : null,
+          url: item.url,
+          alt: item.alt,
+          type: item.type,
+          position: item.position,
+        };
+        if (existingMedia) {
+          await tx.productMedia.update({
+            where: { id: item.id },
+            data: mediaData,
+          });
+        } else {
+          await tx.productMedia.create({
+            data: {
+              id: item.id,
+              productId: product.id,
+              ...mediaData,
+            },
+          });
+        }
       }
-    });
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code !== "P2002") throw error;
+      const target = JSON.stringify(
+        (error as { meta?: { target?: unknown } }).meta?.target || "",
+      ).toLowerCase();
+      if (target.includes("slug"))
+        throw new AppError(409, "SLUG_EXISTS", "Product slug already exists");
+      if (target.includes("sku"))
+        throw new AppError(
+          409,
+          "SKU_EXISTS",
+          "A product variant with this SKU already exists",
+        );
+      throw new AppError(
+        409,
+        "CATALOG_CONFLICT",
+        "The product conflicts with an existing catalog record",
+      );
+    }
   }
 
   async addProductMedia(input: {
@@ -535,14 +591,72 @@ export class PrismaPersistence {
     url: string;
     alt: string;
     position: number;
-  }) {
-    return this.db.productMedia.create({ data: { ...input, type: "IMAGE" } });
+    variantId?: string;
+  }, orderedIds?: string[]) {
+    return this.db.$transaction(async (tx) => {
+      const media = await tx.productMedia.create({
+        data: { ...input, variantId: input.variantId || null, type: "IMAGE" },
+      });
+      for (const [position, id] of (orderedIds || [input.id]).entries())
+        await tx.productMedia.updateMany({
+          where: { id, productId: input.productId },
+          data: { position },
+        });
+      await tx.product.update({
+        where: { id: input.productId },
+        data: { updatedAt: new Date() },
+      });
+      return media;
+    });
+  }
+
+  async reorderProductMedia(productId: string, mediaIds: string[]) {
+    await this.db.$transaction(async (tx) => {
+      for (const [position, id] of mediaIds.entries())
+        await tx.productMedia.updateMany({
+          where: { id, productId },
+          data: { position },
+        });
+      await tx.product.update({
+        where: { id: productId },
+        data: { updatedAt: new Date() },
+      });
+    });
+  }
+
+  async updateProductMedia(
+    productId: string,
+    mediaId: string,
+    data: { alt?: string; variantId?: string | null },
+  ) {
+    const updated = await this.db.productMedia.updateMany({
+      where: { id: mediaId, productId },
+      data,
+    });
+    if (!updated.count)
+      throw new AppError(404, "MEDIA_NOT_FOUND", "Product media not found");
+    await this.db.product.update({
+      where: { id: productId },
+      data: { updatedAt: new Date() },
+    });
+  }
+
+  async deleteProductMedia(productId: string, mediaId: string) {
+    const deleted = await this.db.productMedia.deleteMany({
+      where: { id: mediaId, productId },
+    });
+    if (!deleted.count)
+      throw new AppError(404, "MEDIA_NOT_FOUND", "Product media not found");
+    await this.db.product.update({
+      where: { id: productId },
+      data: { updatedAt: new Date() },
+    });
   }
 
   async archiveProduct(id: string) {
     await this.db.product.update({
       where: { id },
-      data: { status: "ARCHIVED", deletedAt: new Date() },
+      data: { status: "ARCHIVED", deletedAt: null },
     });
   }
 
@@ -551,34 +665,123 @@ export class PrismaPersistence {
     quantity: number,
     reason: string,
     actorId: string,
+    idempotencyKey: string,
   ) {
-    return this.db.$transaction(async (tx) => {
-      const inventory = await tx.inventory.findUnique({ where: { variantId } });
-      if (!inventory || inventory.onHand + quantity < inventory.reserved)
-        throw new AppError(
-          409,
-          "INVENTORY_ADJUSTMENT_INVALID",
-          "Adjustment would reduce stock below reserved quantity",
-        );
-      const updated = await tx.inventory.update({
-        where: { variantId },
-        data: {
-          onHand: { increment: quantity },
-          version: { increment: 1 },
-          movements: { create: { quantity, reason, referenceId: actorId } },
+    const execute = async () =>
+      this.db.$transaction(
+        async (tx) => {
+          const duplicate = await tx.inventoryMovement.findUnique({
+            where: { idempotencyKey },
+            include: { inventory: true },
+          });
+          if (duplicate) {
+            if (
+              duplicate.inventory.variantId !== variantId ||
+              duplicate.quantity !== quantity ||
+              duplicate.reason !== reason
+            )
+              throw new AppError(
+                409,
+                "IDEMPOTENCY_CONFLICT",
+                "This idempotency key was already used for another inventory adjustment",
+              );
+            return {
+              inventory: duplicate.inventory,
+              movement: duplicate,
+              replayed: true,
+            };
+          }
+          const inventory = await tx.inventory.findUnique({
+            where: { variantId },
+          });
+          if (!inventory || inventory.onHand + quantity < inventory.reserved)
+            throw new AppError(
+              409,
+              "INVENTORY_ADJUSTMENT_INVALID",
+              "Adjustment would reduce stock below reserved quantity",
+            );
+          const updated = await tx.inventory.update({
+            where: { variantId },
+            data: {
+              onHand: { increment: quantity },
+              version: { increment: 1 },
+            },
+          });
+          const movement = await tx.inventoryMovement.create({
+            data: {
+              inventoryId: inventory.id,
+              quantity,
+              reason,
+              referenceId: idempotencyKey,
+              idempotencyKey,
+            },
+          });
+          await tx.auditLog.create({
+            data: {
+              userId: actorId,
+              action: "inventory.adjusted",
+              resource: "variant",
+              resourceId: variantId,
+              before: { onHand: inventory.onHand },
+              after: {
+                onHand: updated.onHand,
+                quantity,
+                reason,
+                referenceId: idempotencyKey,
+              },
+            },
+          });
+          return { inventory: updated, movement, replayed: false };
         },
-      });
-      await tx.auditLog.create({
-        data: {
-          userId: actorId,
-          action: "inventory.adjusted",
-          resource: "variant",
-          resourceId: variantId,
-          before: { onHand: inventory.onHand },
-          after: { onHand: updated.onHand, reason },
-        },
-      });
-      return updated;
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await execute();
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code === "P2034") {
+          if (attempt < 2) continue;
+          throw new AppError(
+            503,
+            "INVENTORY_CONFLICT_RETRY",
+            "Inventory changed concurrently; retry the same request",
+          );
+        }
+        if (code !== "P2002") throw error;
+        const duplicate = await this.db.inventoryMovement.findUnique({
+          where: { idempotencyKey },
+          include: { inventory: true },
+        });
+        if (
+          !duplicate ||
+          duplicate.inventory.variantId !== variantId ||
+          duplicate.quantity !== quantity ||
+          duplicate.reason !== reason
+        )
+          throw new AppError(
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            "This idempotency key was already used for another inventory adjustment",
+          );
+        return {
+          inventory: duplicate.inventory,
+          movement: duplicate,
+          replayed: true,
+        };
+      }
+    }
+    throw new AppError(
+      503,
+      "INVENTORY_CONFLICT_RETRY",
+      "Inventory changed concurrently; retry the same request",
+    );
+  }
+
+  listInventoryMovements(variantId: string) {
+    return this.db.inventoryMovement.findMany({
+      where: { inventory: { variantId } },
+      orderBy: { createdAt: "desc" },
     });
   }
 
