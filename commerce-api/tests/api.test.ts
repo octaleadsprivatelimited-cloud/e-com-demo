@@ -13,6 +13,7 @@ const config: AppConfig = {
   INTEGRATION_ENCRYPTION_KEY: "test-encryption-key-that-is-at-least-32-chars",
   CORS_ORIGINS: "http://localhost:5173",
   USE_DATABASE: false,
+  GOOGLE_CLIENT_ID: "test-google-client.apps.googleusercontent.com",
 };
 let server: Server,
   base: string,
@@ -32,7 +33,7 @@ async function request(path: string, init: RequestInit = {}) {
 }
 beforeAll(async () => {
   store = new CommerceStore();
-  const created = await createApp({ config, store });
+  const created = await createApp({ config, store, googleVerifier: async () => ({sub:"google-customer-1",email:"google.customer@example.com",email_verified:true,name:"Google Customer",aud:config.GOOGLE_CLIENT_ID,iss:"https://accounts.google.com",exp:Math.floor(Date.now()/1000)+3600}) });
   server = created.app.listen(0);
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address();
@@ -61,6 +62,19 @@ describe("commerce API", () => {
       success: true,
       data: { status: "healthy" },
     });
+  });
+  it("supports secure customer mobile OTP and verified Google sign-in", async () => {
+    const requested=await request("/api/v1/auth/mobile/request",{method:"POST",body:JSON.stringify({mobile:"+919876543210"})});
+    expect(requested.status).toBe(200);
+    expect(requested.body.data.developmentCode).toMatch(/^\d{6}$/);
+    const wrong=await request("/api/v1/auth/mobile/verify",{method:"POST",body:JSON.stringify({mobile:"+919876543210",code:"000000"})});
+    expect(wrong.status).toBe(401);
+    const verified=await request("/api/v1/auth/mobile/verify",{method:"POST",body:JSON.stringify({mobile:"+919876543210",code:requested.body.data.developmentCode,name:"Mobile Customer"})});
+    expect(verified.status).toBe(200);
+    expect(verified.body.data.user.mobile).toBe("+919876543210");
+    const google=await request("/api/v1/auth/google",{method:"POST",body:JSON.stringify({credential:"x".repeat(120)})});
+    expect(google.status).toBe(200);
+    expect(google.body.data.user.email).toBe("google.customer@example.com");
   });
   it("serves and securely updates white-label storefront settings", async () => {
     const initial = await request("/api/v1/storefront/config");

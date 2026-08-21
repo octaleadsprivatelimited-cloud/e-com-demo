@@ -5,6 +5,7 @@ export type StoredUser = {
   id: string;
   name: string;
   email: string;
+  mobile?: string;
   passwordHash: string;
   role: string;
   permissions: string[];
@@ -119,6 +120,7 @@ export class CommerceStore {
       (x) => x.email.toLowerCase() === email.toLowerCase(),
     );
   }
+  findUserByMobile(mobile:string){return [...this.users.values()].find(user=>user.mobile===mobile)}
   createUser(input: Omit<StoredUser, "id">) {
     if (this.findUser(input.email))
       throw new AppError(

@@ -10,6 +10,7 @@ const schema = z.object({
   INTEGRATION_ENCRYPTION_KEY: z.string().min(32),
   CORS_ORIGINS: z.string().default("http://localhost:5173"),
   USE_DATABASE: z.enum(["true", "false"]).default("false").transform(value => value === "true"),
+  GOOGLE_CLIENT_ID: z.string().default(""),
 });
 export type AppConfig = z.infer<typeof schema>;
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {

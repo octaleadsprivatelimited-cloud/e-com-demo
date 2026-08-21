@@ -7,6 +7,9 @@ export const credentials = z.object({
 export const registerSchema = credentials.extend({
   name: z.string().trim().min(2).max(100),
 });
+export const mobileOtpRequestSchema=z.object({mobile:z.string().regex(/^\+[1-9]\d{7,14}$/)});
+export const mobileOtpVerifySchema=mobileOtpRequestSchema.extend({code:z.string().regex(/^\d{6}$/),name:z.string().trim().min(2).max(100).optional()});
+export const googleLoginSchema=z.object({credential:z.string().min(100).max(10000)});
 const variant = z
   .object({
     sku: z.string().trim().min(3).max(80),

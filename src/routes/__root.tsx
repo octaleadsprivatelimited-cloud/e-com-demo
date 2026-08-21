@@ -15,6 +15,7 @@ import appCss from "../styles.css?url";
 import fixesCss from "../feature-fixes.css?url";
 import portalFixCss from "../portal-nav-fix.css?url";
 import commerceGrowthCss from "../commerce-growth.css?url";
+import authGrowthCss from "../auth-growth.css?url";
 
 function NotFoundComponent() {
   return (
@@ -89,6 +90,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { rel: "stylesheet", href: fixesCss },
       { rel: "stylesheet", href: portalFixCss },
       { rel: "stylesheet", href: commerceGrowthCss },
+      { rel: "stylesheet", href: authGrowthCss },
       { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
       { rel: "manifest", href: "/site.webmanifest" },
     ],

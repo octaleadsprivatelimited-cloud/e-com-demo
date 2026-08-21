@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -426,6 +426,9 @@ export function CheckoutPage() {
   );
 }
 
+type GoogleIdentity={accounts:{id:{initialize:(input:{client_id:string;callback:(response:{credential:string})=>void})=>void;renderButton:(element:HTMLElement,options:Record<string,unknown>)=>void}}};
+function CustomerQuickLogin(){const [mobile,setMobile]=useState("+91"),[code,setCode]=useState(""),[sent,setSent]=useState(false),[busy,setBusy]=useState(false),googleButton=useRef<HTMLDivElement>(null);const finish=(result:{accessToken:string})=>{saveAccessToken(result.accessToken);window.location.href="/account"};useEffect(()=>{commerceApi<{google:{enabled:boolean;clientId:string}}>("/api/v1/auth/providers").then(({google})=>{if(!google.enabled||!googleButton.current)return;const setup=()=>{const identity=(window as typeof window&{google?:GoogleIdentity}).google;if(!identity||!googleButton.current)return;identity.accounts.id.initialize({client_id:google.clientId,callback:async response=>{try{finish(await commerceApi<{accessToken:string}>("/api/v1/auth/google",{method:"POST",body:JSON.stringify({credential:response.credential})}))}catch(error){toast.error(error instanceof Error?error.message:"Google sign-in failed")}}});identity.accounts.id.renderButton(googleButton.current,{theme:"outline",size:"large",width:320,text:"continue_with"})};if((window as typeof window&{google?:GoogleIdentity}).google)return setup();const script=document.createElement("script");script.src="https://accounts.google.com/gsi/client";script.async=true;script.onload=setup;document.head.appendChild(script)}).catch(()=>undefined)},[]);const request=async()=>{setBusy(true);try{const result=await commerceApi<{developmentCode?:string}>("/api/v1/auth/mobile/request",{method:"POST",body:JSON.stringify({mobile})});setSent(true);toast.success(result.developmentCode?`Development OTP: ${result.developmentCode}`:"Verification code sent")}catch(error){toast.error(error instanceof Error?error.message:"Code could not be sent")}finally{setBusy(false)}};const verify=async()=>{setBusy(true);try{finish(await commerceApi<{accessToken:string}>("/api/v1/auth/mobile/verify",{method:"POST",body:JSON.stringify({mobile,code})}))}catch(error){toast.error(error instanceof Error?error.message:"Verification failed")}finally{setBusy(false)}};return <div className="quick-login"><div ref={googleButton}/><div className="auth-divider"><span>or use mobile OTP</span></div><div className="mobile-login"><input aria-label="Mobile number" value={mobile} onChange={e=>setMobile(e.target.value)} placeholder="+919876543210"/>{sent&&<input aria-label="Verification code" value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" placeholder="6-digit OTP"/>}<button type="button" disabled={busy||!/^\+[1-9]\d{7,14}$/.test(mobile)||(sent&&code.length!==6)} onClick={sent?verify:request}>{sent?"Verify & continue":"Send OTP"}</button></div>{sent&&<button type="button" className="otp-change" onClick={()=>{setSent(false);setCode("")}}>Change number</button>}</div>}
+
 export function LoginPage() {
   const [mode, setMode] = useState<"login" | "register">("login"),
     [busy, setBusy] = useState(false);
@@ -444,6 +447,7 @@ export function LoginPage() {
               ? "Access orders, returns, rewards and saved pieces."
               : "Join for faster checkout, order tracking and members-only rewards."}
           </p>
+          {mode === "login" && <CustomerQuickLogin />}
           <form
             onSubmit={async (e) => {
               e.preventDefault();
