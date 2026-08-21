@@ -1,5 +1,5 @@
 export type VariantOption={name:string;values:string[]};
-export type Variant={id:string;sku:string;options:Record<string,string>;price:number;stock:number};
+export type Variant={id:string;sku:string;title?:string;options:Record<string,string>;price:number;mrp:number;stock:number;image?:string;imageAlt?:string};
 export type ProductType="standard"|"apparel"|"footwear"|"grocery"|"pack"|"custom";
 export type Product = { id:string; name:string; category:string; price:number; mrp:number; rating:number; reviews:number; badge?:string; tone:string; glyph:string;image?:string;imageAlt?:string;productType?:ProductType;options?:VariantOption[];variants?:Variant[] };
 export const products: Product[] = [

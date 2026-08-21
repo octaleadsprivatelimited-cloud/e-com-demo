@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { RazorpayPaymentProvider } from "../src/providers.js";
+import {
+  RazorpayPaymentProvider,
+  ShiprocketShippingProvider,
+} from "../src/providers.js";
 
 describe("Razorpay payment adapter", () => {
   it("creates provider orders in minor currency units without exposing the secret", async () => {
@@ -31,4 +34,68 @@ describe("Razorpay payment adapter", () => {
     expect(JSON.parse(String(init?.body)).amount).toBe(9950);
   });
   it("normalizes gateway lookup data and retryable outages",async()=>{const lookup=vi.fn(async()=>new Response(JSON.stringify({items:[{id:"pay_123",status:"captured",amount:125045,currency:"INR"}]}),{status:200,headers:{"content-type":"application/json"}})),provider=new RazorpayPaymentProvider({keyId:"key",keySecret:"secret"},lookup as typeof fetch);await expect(provider.lookup("order_123")).resolves.toMatchObject({status:"CAPTURED",gatewayPaymentId:"pay_123",amount:1250.45});const outage=new RazorpayPaymentProvider({keyId:"key",keySecret:"secret"},vi.fn(async()=>new Response(JSON.stringify({error:{code:"SERVER_ERROR"}}),{status:503,headers:{"content-type":"application/json"}})) as typeof fetch);await expect(outage.createOrder({orderId:"internal",amount:{amount:100,currency:"INR"},idempotencyKey:"key"})).rejects.toMatchObject({code:"PAYMENT_PROVIDER_ERROR",details:{category:"GATEWAY_UNAVAILABLE",retryable:true}})});
+});
+
+describe("Shiprocket shipping adapter", () => {
+  it("assigns the exact selected courier when generating the AWB", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ shipment_id: 16016920 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ response: { data: { awb_code: "19041424751540" } } }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      );
+    const provider = new ShiprocketShippingProvider(
+      {
+        token: "shiprocket-token",
+        pickupPostcode: "500001",
+        pickupLocation: "Primary",
+      },
+      request as typeof fetch,
+    );
+
+    await expect(
+      provider.createShipment({
+        orderId: "order-123",
+        service: "10",
+        idempotencyKey: "ship-order-123",
+        shippingAddress: {
+          name: "Test Customer",
+          line1: "1 Test Road",
+          city: "Hyderabad",
+          state: "Telangana",
+          postalCode: "500081",
+          country: "India",
+          email: "customer@example.com",
+          phone: "+919876543210",
+        },
+        items: [
+          { name: "Test product", sku: "SKU-1", quantity: 1, price: 499 },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      shipmentId: "16016920",
+      awb: "19041424751540",
+    });
+
+    expect(request).toHaveBeenCalledTimes(2);
+    const [assignmentUrl, assignmentInit] = request.mock.calls[1]!;
+    expect(assignmentUrl).toBe(
+      "https://apiv2.shiprocket.in/v1/external/courier/assign/awb",
+    );
+    expect(JSON.parse(String(assignmentInit?.body))).toEqual({
+      shipment_id: 16016920,
+      courier_id: 10,
+    });
+  });
 });

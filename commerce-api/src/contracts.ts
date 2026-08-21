@@ -22,7 +22,9 @@ export interface ShippingProvider {
     destination: string;
     weightGrams: number;
     cod: boolean;
-  }): Promise<Array<{ service: string; amount: Money; etaDays: number }>>;
+  }): Promise<
+    Array<{ service: string; label: string; amount: Money; etaDays: number }>
+  >;
   createShipment(input: {
     orderId: string;
     service: string;

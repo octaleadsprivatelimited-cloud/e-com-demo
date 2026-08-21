@@ -28,10 +28,35 @@ function ProductCard({
   onAdd,
 }: {
   product: Product;
-  onAdd: (p: Product, variant?: Record<string, string>) => void;
+  onAdd: (p: Product, variantId: string) => void;
 }) {
   const [liked, setLiked] = useState(false);
   const [choice, setChoice] = useState(product.options?.[0]?.values[0]);
+  const firstOption = product.options?.[0]?.name;
+  const selectedChoice =
+    choice &&
+    product.variants?.some(
+      (variant) =>
+        variant.stock > 0 &&
+        (!firstOption || variant.options[firstOption] === choice),
+    )
+      ? choice
+      : product.options?.[0]?.values.find((value) =>
+          product.variants?.some(
+            (variant) =>
+              variant.stock > 0 &&
+              (!firstOption || variant.options[firstOption] === value),
+          ),
+        );
+  const chosenVariant =
+    product.variants?.find(
+      (variant) =>
+        variant.stock > 0 &&
+        (!firstOption ||
+          !selectedChoice ||
+          variant.options[firstOption] === selectedChoice),
+    ) || product.variants?.find((variant) => variant.stock > 0);
+  const needsOptionSelection = (product.options?.length || 0) > 1;
   return (
     <article className="product-card">
       <div className="product-art" style={{ background: product.tone }}>
@@ -48,9 +73,19 @@ function ProductCard({
         ) : (
           <span className="art-glyph">{product.glyph}</span>
         )}
-        <button className="quick" onClick={() => onAdd(product, choice && product.options?.[0] ? { [product.options[0].name]: choice } : undefined)}>
-          Quick add {choice && `· ${choice}`} <Plus />
-        </button>
+        {needsOptionSelection ? (
+          <a className="quick" href={`/product/${product.id}`}>
+            Choose options <ArrowRight />
+          </a>
+        ) : (
+          <button
+            className="quick"
+            disabled={!chosenVariant}
+            onClick={() => chosenVariant && onAdd(product, chosenVariant.id)}
+          >
+            Quick add {selectedChoice && `· ${selectedChoice}`} <Plus />
+          </button>
+        )}
       </div>
       <div className="product-info">
         <p>{product.category}</p>
@@ -62,8 +97,14 @@ function ProductCard({
           <div className="store-variants">
             {product.options[0].values.map((v) => (
               <button
-                className={choice === v ? "active" : ""}
+                className={selectedChoice === v ? "active" : ""}
                 onClick={() => setChoice(v)}
+                disabled={
+                  !product.variants?.some(
+                    (variant) =>
+                      variant.stock > 0 && variant.options[firstOption!] === v,
+                  )
+                }
                 key={v}
               >
                 {v}
@@ -72,7 +113,8 @@ function ProductCard({
           </div>
         )}
         <div className="price">
-          {money(product.price)} <s>{money(product.mrp)}</s>
+          {money(chosenVariant?.price ?? product.price)}{" "}
+          <s>{money(chosenVariant?.mrp ?? product.mrp)}</s>
         </div>
       </div>
     </article>
@@ -86,8 +128,11 @@ export function EcommerceHome() {
     [search, setSearch] = useState(false),
     [cartOpen, setCartOpen] = useState(false),[email, setEmail] = useState(""),[query,setQuery]=useState(""),[collection,setCollection]=useState("All");
   const shownProducts=collection==="All"?products:products.filter(product=>product.category===collection),count=cart.count,subtotal=cart.subtotal;
-  const add = (p: Product,variant?:Record<string,string>) => {
-    cart.add(p.id,variant);
+  const add = (p: Product,variantId:string) => {
+    if (!cart.add(p.id,variantId)) {
+      toast.error("That option is currently unavailable");
+      return;
+    }
     toast.success(`${p.name} added to bag`);
   };
   return (
@@ -413,28 +458,51 @@ export function EcommerceHome() {
                   </button>
                 </div>
               ) : (
-                cart.lines.map(({product:p,entry,index}) => (
+                cart.lines.map(({product:p,entry,index,variant,unitPrice,available,unresolved}) => (
                     <div className="cart-line" key={`${p.id}-${index}`}>
                       <div
                         className="cart-thumb"
                         style={{ background: p.tone }}
                       >
-                        {p.image ? <img src={p.image} alt="" /> : p.glyph}
+                        {variant?.image || p.image ? (
+                          <img
+                            src={variant?.image || p.image}
+                            alt={variant?.imageAlt || p.imageAlt || p.name}
+                          />
+                        ) : (
+                          p.glyph
+                        )}
                       </div>
                       <div>
                         <h4>{p.name}</h4>
-                        <p>{p.category}</p>
+                        <p>
+                          {variant?.title ||
+                            (variant && Object.values(variant.options).join(" / ")) ||
+                            p.category}
+                        </p>
+                        {unresolved && (
+                          <small role="alert">
+                            This saved item is no longer available.{" "}
+                            <button onClick={() => cart.update(index, 0)}>
+                              Remove
+                            </button>
+                          </small>
+                        )}
                         <div className="qty">
                           <button onClick={() => cart.update(index, entry.quantity - 1)}>
                             <Minus />
                           </button>
                           <span>{entry.quantity}</span>
-                          <button onClick={() => cart.update(index, entry.quantity + 1)}>
+                          <button
+                            onClick={() => cart.update(index, entry.quantity + 1)}
+                            disabled={unresolved || entry.quantity >= available}
+                            aria-label={`Increase ${p.name} quantity`}
+                          >
                             <Plus />
                           </button>
                         </div>
                       </div>
-                      <strong>{money(p.price * entry.quantity)}</strong>
+                      <strong>{money(unitPrice * entry.quantity)}</strong>
                     </div>
                   ))
               )}

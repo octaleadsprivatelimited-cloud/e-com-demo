@@ -16,6 +16,7 @@ export const storefrontConfigSchema = z.object({
   locale: z.string().regex(/^[a-z]{2,3}(?:-[A-Z]{2})?$/),
   supportEmail: z.union([z.string().email().max(254), z.literal("")]).default(""),
   supportPhone: z.string().trim().max(30).default(""),
+  freeShippingThreshold: z.number().min(0).max(100000000).default(5000),
   announcement: z.string().trim().max(180).default(""),
   footerTagline: z.string().trim().max(240).default(""),
   seoTitle: z.string().trim().max(70).default(""),
@@ -29,7 +30,7 @@ export const defaultStorefrontConfig: StorefrontConfig = {
   storeName: "Aster & Row", legalName: "Aster & Row", businessGstin:"", businessAddress:"", logoUrl: "", faviconUrl: "",
   primaryColor: "#18201d", accentColor: "#a85132", backgroundColor: "#f5f2eb",
   currency: "INR", locale: "en-IN", supportEmail: "support@asterandrow.example",
-  supportPhone: "", announcement: "Complimentary shipping above ₹5,000",
+  supportPhone: "", freeShippingThreshold: 5000, announcement: "Complimentary shipping above ₹5,000",
   footerTagline: "Considered goods for everyday living.", seoTitle: "Aster & Row",
   seoDescription: "Considered goods for everyday living.", primaryDomain: "",
 };

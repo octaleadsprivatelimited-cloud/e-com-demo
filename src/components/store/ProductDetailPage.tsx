@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Check,
   ChevronRight,
@@ -19,17 +19,64 @@ import { Route } from "@/routes/product.$productId";
 export function ProductDetailPage() {
   const { productId } = Route.useParams();
   const products = useStoreProducts();
-  const product = products.find((p) => p.id === productId) || products[0];
+  const product = products.find((p) => p.id === productId);
   const [qty, setQty] = useState(1),
-    [selected, setSelected] = useState<Record<string, string>>(() =>
-      Object.fromEntries(
-        (product.options || []).map((o) => [o.name, o.values[0]]),
-      ),
-    );
+    [selected, setSelected] = useState<Record<string, string>>({});
   const cart = useCommerceCart();
+  useEffect(() => {
+    const initial =
+      product?.variants?.find((variant) => variant.stock > 0) ||
+      product?.variants?.[0];
+    setSelected(initial?.options || {});
+    setQty(1);
+  }, [product?.id]);
+  if (!product)
+    return (
+      <StorePage>
+        <main className="product-page module-empty">
+          <ShoppingBag />
+          <h2>Loading product details…</h2>
+        </main>
+      </StorePage>
+    );
+  const selectedVariant = product.variants?.find(
+    (variant) =>
+      Object.keys(variant.options).length === Object.keys(selected).length &&
+      Object.entries(selected).every(
+        ([name, value]) => variant.options[name] === value,
+      ),
+  );
+  const price = selectedVariant?.price ?? product.price;
+  const mrp = selectedVariant?.mrp ?? product.mrp;
+  const chooseOption = (name: string, value: string) => {
+    const matching =
+      product.variants?.find(
+        (variant) =>
+          variant.stock > 0 &&
+          variant.options[name] === value &&
+          Object.entries(selected).every(
+            ([selectedName, selectedValue]) =>
+              selectedName === name ||
+              variant.options[selectedName] === selectedValue,
+          ),
+      ) ||
+      product.variants?.find(
+        (variant) => variant.stock > 0 && variant.options[name] === value,
+      );
+    setSelected(matching?.options || { ...selected, [name]: value });
+    setQty(1);
+  };
   const add = () => {
-    cart.add(product.id, selected, qty);
+    if (
+      !selectedVariant ||
+      selectedVariant.stock < 1 ||
+      !cart.add(product.id, selectedVariant.id, qty)
+    ) {
+      toast.error("Choose an available product option");
+      return false;
+    }
     toast.success("Added to your bag");
+    return true;
   };
   return (
     <StorePage>
@@ -48,8 +95,15 @@ export function ProductDetailPage() {
               className="detail-art main"
               style={{ background: product.tone }}
             >
-              {product.image ? (
-                <img src={product.image} alt={product.imageAlt || product.name} />
+              {selectedVariant?.image || product.image ? (
+                <img
+                  src={selectedVariant?.image || product.image}
+                  alt={
+                    selectedVariant?.imageAlt ||
+                    product.imageAlt ||
+                    product.name
+                  }
+                />
               ) : product.glyph}
             </div>
             {!product.image && [1, 2, 3].map((x) => (
@@ -70,10 +124,10 @@ export function ProductDetailPage() {
               <a href="#reviews">{product.reviews} reviews</a>
             </div>
             <div className="detail-price">
-              {money(product.price)} <s>{money(product.mrp)}</s>
-              <span>
-                {Math.round((1 - product.price / product.mrp) * 100)}% off
-              </span>
+              {money(price)} <s>{money(mrp)}</s>
+              {mrp > price && (
+                <span>{Math.round((1 - price / mrp) * 100)}% off</span>
+              )}
             </div>
             <p className="tax-note">Inclusive of all taxes</p>
             <p className="detail-copy">
@@ -89,10 +143,14 @@ export function ProductDetailPage() {
                 <div>
                   {opt.values.map((v) => (
                     <button
-                      onClick={() =>
-                        setSelected((s) => ({ ...s, [opt.name]: v }))
-                      }
+                      onClick={() => chooseOption(opt.name, v)}
                       className={selected[opt.name] === v ? "active" : ""}
+                      disabled={
+                        !product.variants?.some(
+                          (variant) =>
+                            variant.stock > 0 && variant.options[opt.name] === v,
+                        )
+                      }
                       key={v}
                     >
                       {v}
@@ -107,18 +165,35 @@ export function ProductDetailPage() {
                   <Minus />
                 </button>
                 <span>{qty}</span>
-                <button onClick={() => setQty(qty + 1)}>
+                <button
+                  onClick={() =>
+                    setQty(
+                      Math.min(20, selectedVariant?.stock || 1, qty + 1),
+                    )
+                  }
+                  disabled={!selectedVariant || qty >= selectedVariant.stock}
+                >
                   <Plus />
                 </button>
               </div>
-              <button className="add-bag" onClick={add}>
+              <button
+                className="add-bag"
+                onClick={add}
+                disabled={!selectedVariant || selectedVariant.stock < 1}
+              >
                 <ShoppingBag /> Add to bag
               </button>
               <button className="save">
                 <Heart />
               </button>
             </div>
-            <a className="buy-now" href="/checkout" onClick={add}>
+            <a
+              className="buy-now"
+              href="/checkout"
+              onClick={(event) => {
+                if (!add()) event.preventDefault();
+              }}
+            >
               Buy it now
             </a>
             <div className="delivery-box">
@@ -176,7 +251,7 @@ export function ProductDetailPage() {
               </div>
               <div>
                 <dt>SKU</dt>
-                <dd>AR-{product.id.toUpperCase()}-001</dd>
+                <dd>{selectedVariant?.sku || `AR-${product.id.toUpperCase()}-001`}</dd>
               </div>
             </dl>
           </div>

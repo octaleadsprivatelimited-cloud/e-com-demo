@@ -19,6 +19,7 @@ import {
 } from "./security.js";
 import {
   checkoutSchema,
+  checkoutQuoteSchema,
   addressSchema,
   cartItemSchema,
   couponSchema,
@@ -157,34 +158,52 @@ export async function createApp(overrides?: {
       );
     return developmentPayments;
   };
-  const resolveShippingProvider = () => {
+  const resolveShippingProvider = (requested?: string) => {
+    const requestedProvider = requested?.trim().toLowerCase();
     const integration = [...store.integrations.values()]
-      .filter((entry) => entry.kind === "SHIPPING" && entry.enabled)
+      .filter(
+        (entry) =>
+          entry.kind === "SHIPPING" &&
+          entry.enabled &&
+          (!requestedProvider ||
+            entry.provider.toLowerCase() === requestedProvider),
+      )
       .sort((a, b) => a.priority - b.priority)[0];
     if (integration?.provider.toLowerCase() === "shiprocket") {
       const secrets = vault.decrypt<Record<string, string>>(
         integration.encryptedCredentials,
       );
+      const pickupPostcode = String(
+        integration.publicConfig.pickupPostcode || "500001",
+      );
       return {
         name: "shiprocket",
+        origin: pickupPostcode,
         provider: new ShiprocketShippingProvider({
           token: secrets.token || secrets.apiKey || "",
-          pickupPostcode: String(
-            integration.publicConfig.pickupPostcode || "500001",
-          ),
+          pickupPostcode,
           pickupLocation: String(
             integration.publicConfig.pickupLocation || "Primary",
           ),
         }),
       };
     }
-    if (config.NODE_ENV === "production")
+    if (
+      config.NODE_ENV === "production" ||
+      (requestedProvider && requestedProvider !== "development")
+    )
       throw new AppError(
         503,
         "SHIPPING_NOT_CONFIGURED",
-        "No live shipping provider is enabled",
+        requestedProvider
+          ? `Shipping provider ${requestedProvider} is not enabled`
+          : "No live shipping provider is enabled",
       );
-    return { name: "development", provider: developmentShipping };
+    return {
+      name: "development",
+      origin: "500001",
+      provider: developmentShipping,
+    };
   };
   if (
     config.NODE_ENV !== "production" &&
@@ -199,7 +218,14 @@ export async function createApp(overrides?: {
     });
   const app = express();
   app.disable("x-powered-by");
-  app.set("trust proxy", 1);
+  app.set(
+    "trust proxy",
+    config.TRUST_PROXY
+      ? config.TRUST_PROXY.split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+      : false,
+  );
   app.use(
     pinoHttp({
       level: config.NODE_ENV === "test" ? "silent" : "info",
@@ -464,12 +490,11 @@ export async function createApp(overrides?: {
       index: false,
     }),
   );
+  // Express only uses X-Forwarded-Host when the direct peer matches the
+  // explicitly configured trusted proxy list. This prevents callers from
+  // selecting another tenant's pricing rules with a forged header.
   const requestHostname = (req: express.Request) =>
-    normalizeHostname(
-      String(
-        req.headers["x-forwarded-host"] || req.headers.host || req.hostname,
-      ),
-    );
+    normalizeHostname(req.hostname);
   const readStorefront = async (hostname: string) => {
     const exactKey = storefrontSettingKey(hostname);
     const stored = persistence
@@ -1541,6 +1566,174 @@ export async function createApp(overrides?: {
       return ok(res, coupon, "Coupon saved");
     },
   );
+  const calculateCheckoutQuote = async (
+    input: {
+      lines: Array<{ variantId: string; quantity: number }>;
+      postalCode: string;
+      couponCode?: string;
+      paymentProvider: string;
+      shippingService?: string;
+    },
+    freeShippingThreshold: number,
+  ) => {
+    const quantities = new Map<string, number>();
+    for (const line of input.lines)
+      quantities.set(
+        line.variantId,
+        (quantities.get(line.variantId) || 0) + line.quantity,
+      );
+    if ([...quantities.values()].some((quantity) => quantity > 20))
+      throw new AppError(
+        422,
+        "VARIANT_QUANTITY_LIMIT",
+        "A single product option cannot exceed 20 units",
+      );
+
+    let subtotal = 0,
+      tax = 0,
+      weight = 0;
+    const lines = input.lines.map((line) => {
+      const { product, variant } = store.getVariant(line.variantId);
+      if (product.status !== "ACTIVE")
+        throw new AppError(
+          409,
+          "PRODUCT_UNAVAILABLE",
+          `${product.name} is no longer available`,
+        );
+      if (
+        variant.stock - variant.reserved <
+        (quantities.get(variant.id) || line.quantity)
+      )
+        throw new AppError(
+          409,
+          "INSUFFICIENT_STOCK",
+          `Insufficient stock for ${variant.sku}`,
+        );
+      const lineTax =
+        (variant.price * line.quantity * product.taxRate) / 100;
+      subtotal += variant.price * line.quantity;
+      tax += lineTax;
+      weight += variant.weightGrams * line.quantity;
+      return {
+        variantId: variant.id,
+        name: product.name,
+        sku: variant.sku,
+        quantity: line.quantity,
+        unitPrice: variant.price,
+        tax: lineTax,
+      };
+    });
+
+    const shippingProvider = resolveShippingProvider();
+    const providerRates = await shippingProvider.provider.rates({
+      origin: shippingProvider.origin,
+      destination: input.postalCode,
+      weightGrams: weight,
+      cod: input.paymentProvider.toLowerCase() === "cod",
+    });
+    if (!providerRates.length)
+      throw new AppError(
+        422,
+        "PINCODE_NOT_SERVICEABLE",
+        "No delivery service is available for this PIN code",
+      );
+    const selectedRate = input.shippingService
+      ? providerRates.find((rate) => rate.service === input.shippingService)
+      : providerRates[0];
+    if (!selectedRate)
+      throw new AppError(
+        422,
+        "SHIPPING_SERVICE_UNAVAILABLE",
+        "The selected delivery service is no longer available",
+      );
+
+    const coupon = input.couponCode
+        ? store.coupons.get(input.couponCode.toUpperCase())
+        : undefined,
+      now = Date.now();
+    if (
+      input.couponCode &&
+      (!coupon ||
+        !coupon.enabled ||
+        coupon.startsAt > now ||
+        coupon.endsAt < now ||
+        subtotal < coupon.minimumSpend ||
+        (coupon.usageLimit !== undefined && coupon.used >= coupon.usageLimit))
+    )
+      throw new AppError(
+        422,
+        "COUPON_NOT_APPLICABLE",
+        "Coupon is invalid or not applicable",
+      );
+    const discount = !coupon
+        ? 0
+        : coupon.type === "PERCENTAGE"
+          ? Math.min(
+              (subtotal * coupon.value) / 100,
+              coupon.maximumDiscount ?? Infinity,
+            )
+          : coupon.type === "FIXED_AMOUNT"
+            ? Math.min(coupon.value, subtotal)
+            : 0,
+      freeShipping =
+        coupon?.type === "FREE_SHIPPING" ||
+        (freeShippingThreshold > 0 && subtotal >= freeShippingThreshold),
+      shippingAmount = freeShipping ? 0 : selectedRate.amount.amount,
+      roundedTax = Math.round(tax * 100) / 100,
+      total =
+        Math.round(
+          (subtotal + roundedTax + shippingAmount - discount) * 100,
+        ) / 100,
+      rates = providerRates.map((rate) => {
+        const shipping = freeShipping ? 0 : rate.amount.amount;
+        return {
+          service: rate.service,
+          label: rate.label,
+          etaDays: rate.etaDays,
+          baseAmount: rate.amount.amount,
+          shipping,
+          currency: rate.amount.currency,
+          total:
+            Math.round((subtotal + roundedTax + shipping - discount) * 100) /
+            100,
+        };
+      });
+    return {
+      lines,
+      coupon,
+      provider: shippingProvider.name,
+      rates,
+      selectedShipping: {
+        service: selectedRate.service,
+        label: selectedRate.label,
+        etaDays: selectedRate.etaDays,
+        quotedAmount: selectedRate.amount.amount,
+        chargedAmount: shippingAmount,
+        currency: selectedRate.amount.currency,
+      },
+      subtotal,
+      tax: roundedTax,
+      discount,
+      shipping: shippingAmount,
+      total,
+      currency: selectedRate.amount.currency,
+      freeShipping,
+    };
+  };
+  app.post(
+    "/api/v1/checkout/quote",
+    limiter(30, 60_000),
+    validate(checkoutQuoteSchema),
+    async (req, res) => {
+      const storefront = await readStorefront(requestHostname(req));
+      const { lines: _lines, coupon: _coupon, ...quote } =
+        await calculateCheckoutQuote(
+          req.body,
+          storefront.freeShippingThreshold,
+        );
+      return ok(res, quote, "Checkout quote calculated");
+    },
+  );
   app.post(
     "/api/v1/checkout",
     limiter(20, 60_000),
@@ -1586,68 +1779,28 @@ export async function createApp(overrides?: {
             "Existing order returned",
           );
         }
-        let subtotal = 0,
-          tax = 0,
-          weight = 0;
-        const lines = req.body.lines.map(
-          (line: { variantId: string; quantity: number }) => {
-            const { product, variant } = store.getVariant(line.variantId);
-            const lineTax =
-              (variant.price * line.quantity * product.taxRate) / 100;
-            subtotal += variant.price * line.quantity;
-            tax += lineTax;
-            weight += variant.weightGrams * line.quantity;
-            return {
-              variantId: variant.id,
-              name: product.name,
-              sku: variant.sku,
-              quantity: line.quantity,
-              unitPrice: variant.price,
-              tax: lineTax,
-            };
-          },
+        const storefront = await readStorefront(requestHostname(req));
+        const quote = await calculateCheckoutQuote(
+          req.body,
+          storefront.freeShippingThreshold,
         );
-        const selectedShipping = resolveShippingProvider();
-        const rates = await selectedShipping.provider.rates({
-            origin: "500001",
-            destination: req.body.postalCode,
-            weightGrams: weight,
-            cod: req.body.paymentProvider === "cod",
-          }),
-          coupon = req.body.couponCode
-            ? store.coupons.get(req.body.couponCode.toUpperCase())
-            : undefined,
-          now = Date.now();
-        if (
-          req.body.couponCode &&
-          (!coupon ||
-            !coupon.enabled ||
-            coupon.startsAt > now ||
-            coupon.endsAt < now ||
-            subtotal < coupon.minimumSpend ||
-            (coupon.usageLimit !== undefined &&
-              coupon.used >= coupon.usageLimit))
-        )
-          throw new AppError(
-            422,
-            "COUPON_NOT_APPLICABLE",
-            "Coupon is invalid or not applicable",
-          );
-        const discount = !coupon
-            ? 0
-            : coupon.type === "PERCENTAGE"
-              ? Math.min(
-                  (subtotal * coupon.value) / 100,
-                  coupon.maximumDiscount ?? Infinity,
-                )
-              : coupon.type === "FIXED_AMOUNT"
-                ? Math.min(coupon.value, subtotal)
-                : 0,
-          shippingAmount =
-            coupon?.type === "FREE_SHIPPING" ? 0 : rates[0]!.amount.amount,
-          total =
-            Math.round((subtotal + tax + shippingAmount - discount) * 100) /
-            100;
+        const {
+          lines,
+          coupon,
+          provider: shippingProviderName,
+          rates,
+          selectedShipping,
+          subtotal,
+          tax,
+          discount,
+          shipping: shippingAmount,
+          total,
+        } = quote;
+        const shippingSelection = {
+          provider: shippingProviderName,
+          ...selectedShipping,
+          quotedAt: new Date().toISOString(),
+        };
         store.reserveMany(req.body.lines);
         reserved = true;
         const isCod = req.body.paymentProvider.toLowerCase() === "cod";
@@ -1661,6 +1814,7 @@ export async function createApp(overrides?: {
           discount,
           total,
           idempotencyKey: `${keyPrefix}.${requestHash}`,
+          shippingSelection,
           trackingVerificationHash: crypto
             .createHash("sha256")
             .update(
@@ -1676,6 +1830,7 @@ export async function createApp(overrides?: {
               postalCode: req.body.postalCode,
             },
             gstin: req.body.gstin,
+            shippingSelection,
           },
         });
         createdOrderId = order.id;
@@ -1707,9 +1862,9 @@ export async function createApp(overrides?: {
             paymentFailure = {
               code: String(details.category || error.code),
               message:
-                "The selected payment gateway is temporarily unavailable. Your order is saved; retry or choose Cash on Delivery.",
+                "The selected payment gateway is temporarily unavailable. Your order is saved; retry the secure payment when the provider is available.",
               retryable: Boolean(details.retryable),
-              fallbackOptions: ["cod"],
+              fallbackOptions: ["retry"],
             };
             order.payment = {
               externalId: `unavailable:${order.id}`,
@@ -1742,6 +1897,7 @@ export async function createApp(overrides?: {
             },
             gstin: req.body.gstin,
             deliveryInstructions: req.body.deliveryInstructions,
+            shippingSelection: order.shippingSelection,
           },
           req.body.paymentProvider,
           req.body.couponCode,
@@ -1755,7 +1911,17 @@ export async function createApp(overrides?: {
             payment,
             paymentFailure,
             fallbackOptions: paymentFailure?.fallbackOptions || [],
-            shipping: rates[0],
+            shipping: selectedShipping,
+            rates,
+            price: {
+              subtotal,
+              tax,
+              discount,
+              shipping: shippingAmount,
+              total,
+              currency: quote.currency,
+              freeShipping: quote.freeShipping,
+            },
           },
           paymentFailure
             ? "Order saved; payment requires another attempt"
@@ -2489,13 +2655,17 @@ export async function createApp(overrides?: {
             "ORDER_NOT_PACKED",
             "Only packed orders can be shipped",
           );
-        const selectedShipping = resolveShippingProvider();
+        const selectedShipping = resolveShippingProvider(
+          order.shippingSelection?.provider,
+        );
         const shipmentContext = persistence
           ? await persistence.shipmentContext(order.id)
           : {};
         const result = await selectedShipping.provider.createShipment({
           orderId: order.id,
-          service: String(req.body?.service || "STANDARD"),
+          service:
+            order.shippingSelection?.service ||
+            String(req.body?.service || "STANDARD"),
           idempotencyKey: `ship:${order.id}`,
           ...shipmentContext,
         });

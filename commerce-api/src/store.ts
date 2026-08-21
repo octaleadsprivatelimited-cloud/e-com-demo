@@ -41,6 +41,16 @@ export type StoredProduct = {
   createdAt: string;
   updatedAt: string;
 };
+export type StoredShippingSelection = {
+  provider: string;
+  service: string;
+  label: string;
+  etaDays: number;
+  quotedAmount: number;
+  chargedAmount: number;
+  currency: string;
+  quotedAt: string;
+};
 export type StoredOrder = {
   id: string;
   number: string;
@@ -61,7 +71,20 @@ export type StoredOrder = {
   total: number;
   idempotencyKey: string;
   trackingVerificationHash?: string;
-  invoiceSnapshot?: {contact?:{name?:string;email?:string;phone?:string};shipping?:{line1?:string;line2?:string;city?:string;state?:string;postalCode?:string;country?:string};gstin?:string};
+  shippingSelection?: StoredShippingSelection;
+  invoiceSnapshot?: {
+    contact?: { name?: string; email?: string; phone?: string };
+    shipping?: {
+      line1?: string;
+      line2?: string;
+      city?: string;
+      state?: string;
+      postalCode?: string;
+      country?: string;
+    };
+    gstin?: string;
+    shippingSelection?: StoredShippingSelection;
+  };
   payment?: { externalId: string; clientToken?: string; provider?:string; status?:string; gatewayTransactionId?:string; lastError?:{code?:string;description?:string} } | null;
   history: Array<{ from?: string; to: string; at: string; actor?: string }>;
   createdAt: string;

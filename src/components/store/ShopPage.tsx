@@ -45,7 +45,7 @@ export function ShopPage() {
               ? b.price - a.price
               : b.rating - a.rating,
         ),
-    [category, query, sort, min, max, ready],
+    [products, category, query, sort, min, max, ready],
   );
   const toggle = (id: string) => {
     setSaved((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));

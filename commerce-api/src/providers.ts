@@ -85,6 +85,7 @@ export class DevelopmentShippingProvider implements ShippingProvider {
     return [
       {
         service: "STANDARD",
+        label: "Standard delivery",
         amount: {
           amount: base + weight + (input.cod ? 40 : 0),
           currency: "INR",
@@ -93,6 +94,7 @@ export class DevelopmentShippingProvider implements ShippingProvider {
       },
       {
         service: "EXPRESS",
+        label: "Express delivery",
         amount: { amount: base + weight + 180, currency: "INR" },
         etaDays: zone === "LOCAL" ? 1 : 2,
       },
@@ -133,15 +135,31 @@ export class ShiprocketShippingProvider implements ShippingProvider {
     const body = await providerJson(await this.request(`https://apiv2.shiprocket.in/v1/external/courier/serviceability/?${query}`, { headers: this.headers }));
     const couriers = (body.data as any)?.available_courier_companies;
     if (!Array.isArray(couriers) || !couriers.length) throw new AppError(422, "PINCODE_NOT_SERVICEABLE", "No Shiprocket courier services this destination");
-    return couriers.slice(0, 10).map((courier: any) => ({ service: String(courier.courier_company_id), amount: { amount: Number(courier.rate || courier.freight_charge || 0), currency: "INR" }, etaDays: Number(courier.estimated_delivery_days || 5) }));
+    return couriers.slice(0, 10).map((courier: any) => ({ service: String(courier.courier_company_id), label: String(courier.courier_name || courier.courier_company_name || "Courier delivery"), amount: { amount: Number(courier.rate || courier.freight_charge || 0), currency: "INR" }, etaDays: Number(courier.estimated_delivery_days || 5) }));
   }
   async createShipment(input: { orderId: string; service: string; idempotencyKey: string; shippingAddress?: Record<string, unknown>; items?: Array<{ name: string; sku: string; quantity: number; price: number }> }) {
     if (!input.shippingAddress || !input.items?.length) throw new AppError(422, "SHIPMENT_DETAILS_REQUIRED", "A complete shipping address and order items are required");
+    const courierId = Number(input.service);
+    if (!Number.isSafeInteger(courierId) || courierId < 1)
+      throw new AppError(422, "SHIPPING_SERVICE_INVALID", "The selected Shiprocket courier is invalid");
     const a = input.shippingAddress as any;
     const body = await providerJson(await this.request("https://apiv2.shiprocket.in/v1/external/orders/create/adhoc", { method: "POST", headers: this.headers, body: JSON.stringify({ order_id: input.orderId, order_date: new Date().toISOString().slice(0, 16).replace("T", " "), pickup_location: this.credentials.pickupLocation, billing_customer_name: a.name, billing_address: a.line1, billing_address_2: a.line2 || "", billing_city: a.city, billing_pincode: a.postalCode, billing_state: a.state, billing_country: a.country || "India", billing_email: a.email, billing_phone: a.phone, shipping_is_billing: true, order_items: input.items.map(item => ({ name: item.name, sku: item.sku, units: item.quantity, selling_price: item.price })), payment_method: a.cod ? "COD" : "Prepaid", sub_total: input.items.reduce((sum, item) => sum + item.price * item.quantity, 0), length: 10, breadth: 10, height: 10, weight: Math.max(.1, Number(a.weightGrams || 500) / 1000) }) }));
-    const shipmentId = String(body.shipment_id || ""), awb = String(body.awb_code || "");
-    if (!shipmentId) throw new AppError(502, "INVALID_PROVIDER_RESPONSE", "Shiprocket response did not contain a shipment ID");
-    return { shipmentId, awb, trackingUrl: awb ? `https://shiprocket.co/tracking/${encodeURIComponent(awb)}` : undefined };
+    const shipmentId = String(body.shipment_id || "");
+    const shipmentNumber = Number(shipmentId);
+    if (!Number.isSafeInteger(shipmentNumber) || shipmentNumber < 1)
+      throw new AppError(502, "INVALID_PROVIDER_RESPONSE", "Shiprocket response did not contain a valid shipment ID");
+
+    // Shiprocket's order endpoint creates the shipment, but the selected
+    // courier is only enforced when its ID is supplied to the AWB endpoint.
+    const assignment = await providerJson(await this.request("https://apiv2.shiprocket.in/v1/external/courier/assign/awb", {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({ shipment_id: shipmentNumber, courier_id: courierId }),
+    }));
+    const assignmentData = (assignment.response as any)?.data || assignment.data || assignment;
+    const awb = String(assignmentData.awb_code || assignmentData.awb || body.awb_code || "");
+    if (!awb) throw new AppError(502, "INVALID_PROVIDER_RESPONSE", "Shiprocket did not assign an AWB for the selected courier");
+    return { shipmentId, awb, trackingUrl: `https://shiprocket.co/tracking/${encodeURIComponent(awb)}` };
   }
   async verifyWebhook(raw: Buffer, signature: string) {
     const expected = crypto.createHmac("sha256", this.credentials.token).update(raw).digest("hex"), a = Buffer.from(expected), b = Buffer.from(signature || "");

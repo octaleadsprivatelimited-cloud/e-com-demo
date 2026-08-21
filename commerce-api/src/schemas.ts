@@ -49,16 +49,17 @@ export const productSchema = z.object({
   })).max(30).default([]),
   variants: z.array(variant).min(1).max(200),
 });
+const checkoutLinesSchema = z
+  .array(
+    z.object({
+      variantId: z.string().uuid(),
+      quantity: z.number().int().min(1).max(20),
+    }),
+  )
+  .min(1)
+  .max(100);
 export const checkoutSchema = z.object({
-  lines: z
-    .array(
-      z.object({
-        variantId: z.string().uuid(),
-        quantity: z.number().int().min(1).max(20),
-      }),
-    )
-    .min(1)
-    .max(100),
+  lines: checkoutLinesSchema,
   postalCode: z.string().regex(/^\d{6}$/),
   contact: z.object({
     name: z.string().trim().min(2).max(100),
@@ -84,6 +85,14 @@ export const checkoutSchema = z.object({
   deliveryInstructions: z.string().trim().max(500).optional(),
   couponCode: z.string().max(40).optional(),
   paymentProvider: z.string().min(2).max(40),
+  shippingService: z.string().trim().min(1).max(120).optional(),
+});
+export const checkoutQuoteSchema = checkoutSchema.pick({
+  lines: true,
+  postalCode: true,
+  couponCode: true,
+  paymentProvider: true,
+  shippingService: true,
 });
 export const integrationSchema = z.object({
   kind: z.enum([

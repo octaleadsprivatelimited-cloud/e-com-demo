@@ -16,6 +16,7 @@ const config: AppConfig = {
   JWT_REFRESH_SECRET: "test-refresh-secret-that-is-at-least-32-chars",
   INTEGRATION_ENCRYPTION_KEY: "test-encryption-key-that-is-at-least-32-chars",
   CORS_ORIGINS: "http://localhost:5173",
+  TRUST_PROXY: "",
   USE_DATABASE: false,
   GOOGLE_CLIENT_ID: "test-google-client.apps.googleusercontent.com",
   UPLOAD_DIR: "",
@@ -116,6 +117,7 @@ describe("commerce API", () => {
   it("serves and securely updates white-label storefront settings", async () => {
     const initial = await request("/api/v1/storefront/config");
     expect(initial.body.data.storeName).toBe("Aster & Row");
+    expect(initial.body.data.freeShippingThreshold).toBe(5000);
     const unauthorized = await request("/api/v1/admin/storefront-config");
     expect(unauthorized.status).toBe(401);
     const updated = {
@@ -131,6 +133,31 @@ describe("commerce API", () => {
     expect(saved.status).toBe(200);
     const branded = await request("/api/v1/storefront/config");
     expect(branded.body.data.storeName).toBe("Customer Store");
+    const firstTenant = await request("/api/v1/admin/storefront-config", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        ...updated,
+        storeName: "First Tenant",
+        primaryDomain: "first.customer.test",
+        freeShippingThreshold: 0,
+      }),
+    });
+    expect(firstTenant.status).toBe(200);
+    const secondTenant = await request("/api/v1/admin/storefront-config", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        ...updated,
+        freeShippingThreshold: 5000,
+      }),
+    });
+    expect(secondTenant.status).toBe(200);
+    const forgedTenant = await request("/api/v1/storefront/config", {
+      headers: { "x-forwarded-host": "first.customer.test" },
+    });
+    expect(forgedTenant.body.data.storeName).toBe("Customer Store");
+    expect(forgedTenant.body.data.freeShippingThreshold).toBe(5000);
     expect(
       store.auditLogs.some(
         (log) => log.action === "storefront.settings.updated",
@@ -437,6 +464,95 @@ describe("commerce API", () => {
     expect(checkout.status).toBe(201);
     expect(checkout.body.data.order.discount).toBeGreaterThan(0);
   });
+  it("quotes selectable delivery services and applies shipping rules", async () => {
+    const variants = store
+      .listProducts()
+      .filter((product) => product.status === "ACTIVE")
+      .flatMap((product) => product.variants);
+    const lowValueVariant = variants.find((variant) => variant.price < 5000)!;
+    const quoteBody = {
+      lines: [{ variantId: lowValueVariant.id, quantity: 1 }],
+      postalCode: "500081",
+      paymentProvider: "razorpay",
+    };
+    const standard = await request("/api/v1/checkout/quote", {
+      method: "POST",
+      body: JSON.stringify({ ...quoteBody, shippingService: "STANDARD" }),
+    });
+    expect(standard.status).toBe(200);
+    expect(standard.body.data).toMatchObject({
+      freeShipping: false,
+      subtotal: lowValueVariant.price,
+      selectedShipping: {
+        service: "STANDARD",
+        label: "Standard delivery",
+      },
+    });
+    expect(standard.body.data.rates.map((rate: any) => rate.service)).toEqual([
+      "STANDARD",
+      "EXPRESS",
+    ]);
+    expect(standard.body.data.total).toBeCloseTo(
+      standard.body.data.subtotal +
+        standard.body.data.tax +
+        standard.body.data.shipping,
+      2,
+    );
+
+    const express = await request("/api/v1/checkout/quote", {
+      method: "POST",
+      body: JSON.stringify({ ...quoteBody, shippingService: "EXPRESS" }),
+    });
+    expect(express.status).toBe(200);
+    expect(express.body.data.selectedShipping.service).toBe("EXPRESS");
+    expect(express.body.data.shipping).toBeGreaterThan(
+      standard.body.data.shipping,
+    );
+
+    const cod = await request("/api/v1/checkout/quote", {
+      method: "POST",
+      body: JSON.stringify({
+        ...quoteBody,
+        paymentProvider: "cod",
+        shippingService: "STANDARD",
+      }),
+    });
+    expect(cod.status).toBe(200);
+    expect(cod.body.data.selectedShipping.quotedAmount).toBeGreaterThan(
+      standard.body.data.selectedShipping.quotedAmount,
+    );
+
+    const highValueVariant = variants.find(
+      (variant) => variant.price >= 5000,
+    )!;
+    const threshold = await request("/api/v1/checkout/quote", {
+      method: "POST",
+      body: JSON.stringify({
+        lines: [{ variantId: highValueVariant.id, quantity: 1 }],
+        postalCode: "500081",
+        paymentProvider: "razorpay",
+        shippingService: "EXPRESS",
+      }),
+    });
+    expect(threshold.status).toBe(200);
+    expect(threshold.body.data.freeShipping).toBe(true);
+    expect(threshold.body.data.shipping).toBe(0);
+    expect(
+      threshold.body.data.rates.every((rate: any) => rate.shipping === 0),
+    ).toBe(true);
+
+    const unavailable = await request("/api/v1/checkout/quote", {
+      method: "POST",
+      body: JSON.stringify({
+        ...quoteBody,
+        shippingService: "SAME_DAY_UNAVAILABLE",
+      }),
+    });
+    expect(unavailable.status).toBe(422);
+    expect(unavailable.body.error.code).toBe(
+      "SHIPPING_SERVICE_UNAVAILABLE",
+    );
+  });
   it("calculates checkout server-side and is idempotent", async () => {
     const product = store.listProducts().find((x) => x.status === "ACTIVE")!,
       variant = product.variants[0]!,
@@ -455,8 +571,19 @@ describe("commerce API", () => {
           country: "IN",
         },
         paymentProvider: "razorpay",
+        shippingService: "EXPRESS",
       },
       key = `checkout-${crypto.randomUUID()}`;
+    const quote = await request("/api/v1/checkout/quote", {
+      method: "POST",
+      body: JSON.stringify({
+        lines: payload.lines,
+        postalCode: payload.postalCode,
+        paymentProvider: payload.paymentProvider,
+        shippingService: payload.shippingService,
+      }),
+    });
+    expect(quote.status).toBe(200);
     const one = await request("/api/v1/checkout", {
       method: "POST",
       headers: {
@@ -467,6 +594,18 @@ describe("commerce API", () => {
     });
     expect(one.status).toBe(201);
     expect(one.body.data.order.subtotal).toBe(variant.price * 2);
+    expect(one.body.data.order.total).toBe(quote.body.data.total);
+    expect(one.body.data.order.shippingSelection).toMatchObject({
+      provider: quote.body.data.provider,
+      service: "EXPRESS",
+      label: quote.body.data.selectedShipping.label,
+      quotedAmount: quote.body.data.selectedShipping.quotedAmount,
+      chargedAmount: quote.body.data.selectedShipping.chargedAmount,
+    });
+    expect(one.body.data.shipping).toEqual(
+      quote.body.data.selectedShipping,
+    );
+    expect(one.body.data.price.total).toBe(quote.body.data.total);
     const two = await request("/api/v1/checkout", {
       method: "POST",
       headers: {
@@ -540,64 +679,72 @@ describe("commerce API", () => {
   });
   it("rejects overselling", async () => {
     const variant = store.listProducts().find((x) => x.status === "ACTIVE")!
-      .variants[0]!;
-    const r = await request("/api/v1/checkout", {
-      method: "POST",
-      headers: { "idempotency-key": `checkout-${crypto.randomUUID()}` },
-      body: JSON.stringify({
-        lines: [
-          { variantId: variant.id, quantity: 20 },
-          { variantId: variant.id, quantity: 20 },
-        ],
-        postalCode: "500081",
-        contact: {
-          name: "Test Customer",
-          email: "customer@example.com",
-          phone: "+919876543210",
-        },
-        shippingAddress: {
-          line1: "1 Test Road",
-          city: "Hyderabad",
-          state: "Telangana",
-          country: "IN",
-        },
-        paymentProvider: "cod",
-      }),
-    });
-    expect(r.status).toBe(409);
-    expect(r.body.error.code).toBe("INSUFFICIENT_STOCK");
+      .variants[0]!,
+      originalStock = variant.stock;
+    variant.stock = variant.reserved;
+    try {
+      const r = await request("/api/v1/checkout", {
+        method: "POST",
+        headers: { "idempotency-key": `checkout-${crypto.randomUUID()}` },
+        body: JSON.stringify({
+          lines: [{ variantId: variant.id, quantity: 1 }],
+          postalCode: "500081",
+          contact: {
+            name: "Test Customer",
+            email: "customer@example.com",
+            phone: "+919876543210",
+          },
+          shippingAddress: {
+            line1: "1 Test Road",
+            city: "Hyderabad",
+            state: "Telangana",
+            country: "IN",
+          },
+          paymentProvider: "cod",
+        }),
+      });
+      expect(r.status).toBe(409);
+      expect(r.body.error.code).toBe("INSUFFICIENT_STOCK");
+    } finally {
+      variant.stock = originalStock;
+    }
   });
   it("does not reserve any stock when a multi-line cart fails", async () => {
     const products = store.listProducts().filter((x) => x.status === "ACTIVE");
     const available = products[1]!.variants[0]!;
     const unavailable = products[2]!.variants[0]!;
-    const before = available.reserved;
-    const r = await request("/api/v1/checkout", {
-      method: "POST",
-      headers: { "idempotency-key": `checkout-${crypto.randomUUID()}` },
-      body: JSON.stringify({
-        lines: [
-          { variantId: available.id, quantity: 1 },
-          { variantId: unavailable.id, quantity: 20 },
-          { variantId: unavailable.id, quantity: 20 },
-        ],
-        postalCode: "500081",
-        contact: {
-          name: "Test Customer",
-          email: "customer@example.com",
-          phone: "+919876543210",
-        },
-        shippingAddress: {
-          line1: "1 Test Road",
-          city: "Hyderabad",
-          state: "Telangana",
-          country: "IN",
-        },
-        paymentProvider: "cod",
-      }),
-    });
-    expect(r.status).toBe(409);
-    expect(available.reserved).toBe(before);
+    const before = available.reserved,
+      originalStock = unavailable.stock;
+    unavailable.stock = unavailable.reserved;
+    try {
+      const r = await request("/api/v1/checkout", {
+        method: "POST",
+        headers: { "idempotency-key": `checkout-${crypto.randomUUID()}` },
+        body: JSON.stringify({
+          lines: [
+            { variantId: available.id, quantity: 1 },
+            { variantId: unavailable.id, quantity: 1 },
+          ],
+          postalCode: "500081",
+          contact: {
+            name: "Test Customer",
+            email: "customer@example.com",
+            phone: "+919876543210",
+          },
+          shippingAddress: {
+            line1: "1 Test Road",
+            city: "Hyderabad",
+            state: "Telangana",
+            country: "IN",
+          },
+          paymentProvider: "cod",
+        }),
+      });
+      expect(r.status).toBe(409);
+      expect(available.reserved).toBe(before);
+    } finally {
+      unavailable.stock = originalStock;
+    }
   });
   it("enforces the order state machine and creates shipments only when packed", async () => {
     const order = [...store.orders.values()].find(

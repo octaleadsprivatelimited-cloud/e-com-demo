@@ -148,9 +148,9 @@ export class PrismaPersistence {
       });
     }
     for (const order of orders) {
-      const snapshot = order.addressSnapshot as {
-        contact?: { email?: string; phone?: string };
-      };
+      const snapshot = order.addressSnapshot as NonNullable<
+        StoredOrder["invoiceSnapshot"]
+      >;
       const trackingValue = snapshot.contact?.email || snapshot.contact?.phone;
       store.orders.set(order.id, {
         id: order.id,
@@ -169,8 +169,8 @@ export class PrismaPersistence {
         trackingVerificationHash: trackingValue
           ? hash(trackingValue.trim().toLowerCase())
           : undefined,
-        invoiceSnapshot:
-          order.addressSnapshot as StoredOrder["invoiceSnapshot"],
+        shippingSelection: snapshot.shippingSelection,
+        invoiceSnapshot: snapshot,
         lines: order.items.map((item) => ({
           variantId: item.variantId,
           name: item.name,

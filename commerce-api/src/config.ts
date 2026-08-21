@@ -9,6 +9,7 @@ const schema = z.object({
   JWT_REFRESH_SECRET: z.string().min(32),
   INTEGRATION_ENCRYPTION_KEY: z.string().min(32),
   CORS_ORIGINS: z.string().default("http://localhost:5173"),
+  TRUST_PROXY: z.string().default(""),
   USE_DATABASE: z.enum(["true", "false"]).default("false").transform(value => value === "true"),
   GOOGLE_CLIENT_ID: z.string().default(""),
   UPLOAD_DIR: z.string().default("uploads"),
