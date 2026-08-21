@@ -61,6 +61,7 @@ export type StoredOrder = {
   total: number;
   idempotencyKey: string;
   trackingVerificationHash?: string;
+  invoiceSnapshot?: {contact?:{name?:string;email?:string;phone?:string};shipping?:{line1?:string;line2?:string;city?:string;state?:string;postalCode?:string;country?:string};gstin?:string};
   payment?: { externalId: string; clientToken?: string; provider?:string; status?:string; gatewayTransactionId?:string; lastError?:{code?:string;description?:string} } | null;
   history: Array<{ from?: string; to: string; at: string; actor?: string }>;
   createdAt: string;

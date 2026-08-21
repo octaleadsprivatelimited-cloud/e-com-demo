@@ -62,6 +62,7 @@ import { defaultStorefrontConfig, normalizeHostname, storefrontSettingKey, type 
 import { activeCampaign, defaultPromotionConfig, type PromotionConfig } from "./promotions.js";
 import { verifyGoogleIdToken } from "./google-auth.js";
 import {convertProductImage,productImageUpload} from "./image-upload.js";
+import {generateInvoicePdf} from "./invoice.js";
 
 const ok = (
   res: express.Response,
@@ -508,7 +509,7 @@ export async function createApp(overrides?: {
     if (!user) throw new AppError(404, "ACCOUNT_NOT_FOUND", "Account not found");
     if (user.role !== "CUSTOMER") throw new AppError(403, "CUSTOMER_ACCOUNT_REQUIRED", "Staff accounts cannot be deleted here");
     const retainedOrders = persistence ? (await persistence.deleteCustomerAccount(userId)).retainedOrders : [...store.orders.values()].filter(order => order.userId === userId).length;
-    for (const order of store.orders.values()) if (order.userId === userId) order.userId = undefined;
+    for (const order of store.orders.values()) if (order.userId === userId) {order.userId = undefined;order.invoiceSnapshot={};}
     for (const [id, session] of store.sessions) if (session.userId === userId) store.sessions.delete(id);
     for (const [id, review] of store.reviews) if (review.userId === userId) store.reviews.delete(id);
     for (const [id, request] of store.returns) if (request.userId === userId) store.returns.delete(id);
@@ -857,6 +858,7 @@ export async function createApp(overrides?: {
           total,
           idempotencyKey: `${keyPrefix}.${requestHash}`,
           trackingVerificationHash: crypto.createHash("sha256").update(String(req.body.contact.email || req.body.contact.phone).trim().toLowerCase()).digest("hex"),
+          invoiceSnapshot: {contact:req.body.contact,shipping:{...req.body.shippingAddress,postalCode:req.body.postalCode},gstin:req.body.gstin},
         });
         createdOrderId = order.id;
         let payment:null|{externalId:string;clientToken?:string}=null,paymentFailure:{code:string;message:string;retryable:boolean;fallbackOptions:string[]}|undefined;
@@ -916,6 +918,7 @@ export async function createApp(overrides?: {
       ),
     ),
   );
+  app.get("/api/v1/orders/:id/invoice",auth,async(req,res)=>{const order=store.orders.get(String(req.params.id));if(!order||(order.userId!==req.principal!.sub&&!req.principal!.permissions.includes("orders:read")))throw new AppError(404,"ORDER_NOT_FOUND","Order not found");const storefront=await readStorefront(requestHostname(req)),pdf=await generateInvoicePdf({store:{name:storefront.storeName,legalName:storefront.legalName,gstin:storefront.businessGstin,address:storefront.businessAddress,email:storefront.supportEmail,phone:storefront.supportPhone},order:{number:order.number,createdAt:order.createdAt,status:order.status,subtotal:order.subtotal,tax:order.tax,shipping:order.shipping,discount:order.discount,total:order.total,paymentStatus:order.payment?.status||(order.payment?"PENDING":"CASH_ON_DELIVERY"),lines:order.lines,snapshot:order.invoiceSnapshot}});res.setHeader("content-type","application/pdf");res.setHeader("content-disposition",`attachment; filename="invoice-${order.number.replace(/[^A-Za-z0-9_-]/g,"")}.pdf"`);res.setHeader("cache-control","private, no-store");return res.status(200).send(pdf)});
   app.post(
     "/api/v1/account/returns",
     auth,

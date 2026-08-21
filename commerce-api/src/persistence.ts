@@ -147,6 +147,7 @@ export class PrismaPersistence {
         status: order.status,
         payment: order.payments[0]?.externalId ? { externalId: order.payments[0].externalId } : null,
         trackingVerificationHash: trackingValue ? hash(trackingValue.trim().toLowerCase()) : undefined,
+        invoiceSnapshot: order.addressSnapshot as StoredOrder["invoiceSnapshot"],
         lines: order.items.map((item) => ({
           variantId: item.variantId,
           name: item.name,

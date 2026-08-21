@@ -38,6 +38,8 @@ export async function commerceApi<T>(path: string, init: RequestInit = {}) {
   return (body as ApiEnvelope<T>).data;
 }
 
+export async function commerceDownload(path:string){const token=typeof window!=="undefined"?sessionStorage.getItem("commerce_access_token"):null,response=await fetch(`${API_URL}${path}`,{credentials:"include",headers:token?{authorization:`Bearer ${token}`}:{}});if(!response.ok){const body=await response.json().catch(()=>null);throw new CommerceApiError(response.status,body?.error?.code||"DOWNLOAD_FAILED",body?.error?.message||"The file could not be downloaded")}return response.blob()}
+
 export type ApiProduct = {
   id: string;
   name: string;

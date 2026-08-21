@@ -137,6 +137,7 @@ export function CheckoutPage() {
     [placed, setPlaced] = useState(false),
     [orderNumber, setOrderNumber] = useState(""),
     [postalCode, setPostalCode] = useState(""),
+    [gstin,setGstin]=useState(""),
     [contact, setContact] = useState({ name: "Ananya Sharma", email: "ananya@example.com", phone: "" }),
     [address, setAddress] = useState({ line1: "", line2: "", city: "", state: "Telangana", country: "IN" }),
     [paymentProvider, setPaymentProvider] = useState("razorpay"),
@@ -185,7 +186,7 @@ export function CheckoutPage() {
         {
           method: "POST",
           headers: { "idempotency-key": checkoutKey.current },
-          body: JSON.stringify({ lines, postalCode, paymentProvider, contact, shippingAddress: address, couponCode: coupon.applied?.code }),
+          body: JSON.stringify({ lines, postalCode, paymentProvider, contact, shippingAddress: address, couponCode: coupon.applied?.code, gstin:gstin||undefined }),
         },
       );
       setOrderNumber(result.order.number);
@@ -315,6 +316,7 @@ export function CheckoutPage() {
                 Phone number
                 <input type="tel" value={contact.phone} onChange={(event) => setContact(value => ({ ...value, phone: event.target.value }))} placeholder="+91…" />
               </label>
+              <label>GSTIN <small>(optional, shown on invoice)</small><input value={gstin} onChange={event=>setGstin(event.target.value.toUpperCase())} maxLength={15} placeholder="22AAAAA0000A1Z5" /></label>
               <button className="continue" onClick={() => setStep(2)}>
                 Continue to delivery <ArrowRight />
               </button>

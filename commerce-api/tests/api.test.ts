@@ -417,6 +417,7 @@ describe("commerce API", () => {
     expect(allowed.status).toBe(200);
     expect(allowed.body.data.number).toBe(order.number);
   });
+  it("generates a customer invoice PDF without exposing another account",async()=>{const order=[...store.orders.values()].find(item=>item.userId===store.findUser("ananya@example.com")?.id)!;const denied=await fetch(`${base}/api/v1/orders/${order.id}/invoice`,{headers:{authorization:`Bearer ${adminToken.replace(/.$/,"x")}`}});expect(denied.status).toBe(401);const response=await fetch(`${base}/api/v1/orders/${order.id}/invoice`,{headers:{authorization:`Bearer ${customerToken}`}}),bytes=Buffer.from(await response.arrayBuffer());expect(response.status).toBe(200);expect(response.headers.get("content-type")).toContain("application/pdf");expect(response.headers.get("content-disposition")).toContain(order.number);expect(bytes.subarray(0,4).toString()).toBe("%PDF");expect(bytes.length).toBeGreaterThan(1500)});
   it("encrypts integration credentials and never returns plaintext", async () => {
     const r = await request("/api/v1/admin/integrations", {
       method: "PUT",

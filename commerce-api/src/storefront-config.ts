@@ -5,6 +5,8 @@ const optionalUrl = z.union([z.string().url().max(1000), z.literal("")]);
 export const storefrontConfigSchema = z.object({
   storeName: z.string().trim().min(2).max(100),
   legalName: z.string().trim().max(160).default(""),
+  businessGstin: z.union([z.string().trim().toUpperCase().regex(/^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]$/),z.literal("")]).default(""),
+  businessAddress: z.string().trim().max(500).default(""),
   logoUrl: optionalUrl.default(""),
   faviconUrl: optionalUrl.default(""),
   primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
@@ -24,7 +26,7 @@ export const storefrontConfigSchema = z.object({
 export type StorefrontConfig = z.infer<typeof storefrontConfigSchema>;
 
 export const defaultStorefrontConfig: StorefrontConfig = {
-  storeName: "Aster & Row", legalName: "Aster & Row", logoUrl: "", faviconUrl: "",
+  storeName: "Aster & Row", legalName: "Aster & Row", businessGstin:"", businessAddress:"", logoUrl: "", faviconUrl: "",
   primaryColor: "#18201d", accentColor: "#a85132", backgroundColor: "#f5f2eb",
   currency: "INR", locale: "en-IN", supportEmail: "support@asterandrow.example",
   supportPhone: "", announcement: "Complimentary shipping above ₹5,000",

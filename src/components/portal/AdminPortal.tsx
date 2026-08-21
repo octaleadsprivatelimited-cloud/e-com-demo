@@ -734,7 +734,9 @@ function Integrations() {
   );
 }
 
-function WhiteLabelSettings() {
+function WhiteLabelSettings(){const [form,setForm]=useState<StorefrontConfig|null>(null),[saving,setSaving]=useState(false);useEffect(()=>{commerceApi<StorefrontConfig>("/api/v1/admin/storefront-config").then(setForm).catch(()=>undefined)},[]);const saveInvoice=async()=>{if(!form)return;setSaving(true);try{setForm(await commerceApi<StorefrontConfig>("/api/v1/admin/storefront-config",{method:"PUT",body:JSON.stringify(form)}));toast.success("Invoice identity saved")}catch(reason){toast.error(reason instanceof Error?reason.message:"Invoice settings could not be saved")}finally{setSaving(false)}};return <><WhiteLabelSettingsForm/>{form&&<section className="panel form-panel invoice-identity"><div className="panel-head"><div><h2>Invoice identity</h2><p>Shown on customer tax invoice downloads when provided</p></div></div><div className="form-row"><label>Business GSTIN<input value={form.businessGstin} onChange={event=>setForm({...form,businessGstin:event.target.value.toUpperCase()})} maxLength={15} placeholder="36AAAAA0000A1Z5"/></label><label>Registered business address<textarea value={form.businessAddress} onChange={event=>setForm({...form,businessAddress:event.target.value})}/></label></div><button className="primary" onClick={saveInvoice} disabled={saving}><Save/>{saving?"Saving…":"Save invoice identity"}</button></section>}</>}
+
+function WhiteLabelSettingsForm() {
   const [form,setForm]=useState<StorefrontConfig>(defaultStorefrontConfig),[loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState("");
   useEffect(()=>{if(!sessionStorage.getItem("commerce_access_token")){setError("Sign in with an administrator account to configure this store.");setLoading(false);return}commerceApi<StorefrontConfig>("/api/v1/admin/storefront-config").then(setForm).catch(reason=>setError(reason instanceof Error?reason.message:"Settings could not be loaded")).finally(()=>setLoading(false))},[]);
   const field=(key:keyof StorefrontConfig,value:string)=>setForm(current=>({...current,[key]:value}));
