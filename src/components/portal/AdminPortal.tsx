@@ -787,7 +787,7 @@ export function AdminPortal() {
 
 function ModuleView({ module }: { module: string }) {
   const [records, setRecords] = useState<Record<string, unknown>[]>([]), [loading, setLoading] = useState(false), [loadError, setLoadError] = useState("");
-  const endpoint: Record<string, string> = { Orders: "/api/v1/admin/orders", Customers: "/api/v1/admin/customers", Inventory: "/api/v1/admin/inventory" };
+  const endpoint: Record<string, string> = { Orders: "/api/v1/admin/orders", Customers: "/api/v1/admin/customers", Inventory: "/api/v1/admin/inventory", Payments: "/api/v1/admin/payments" };
   const load = async () => {
     if (!endpoint[module]) return;
     if (!sessionStorage.getItem("commerce_access_token")) { setLoadError("Authentication required"); setRecords([]); return; }

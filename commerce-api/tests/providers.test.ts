@@ -30,4 +30,5 @@ describe("Razorpay payment adapter", () => {
     expect(init?.headers).toMatchObject({ "x-razorpay-idempotency-key": "refund-order-line-1" });
     expect(JSON.parse(String(init?.body)).amount).toBe(9950);
   });
+  it("normalizes gateway lookup data and retryable outages",async()=>{const lookup=vi.fn(async()=>new Response(JSON.stringify({items:[{id:"pay_123",status:"captured",amount:125045,currency:"INR"}]}),{status:200,headers:{"content-type":"application/json"}})),provider=new RazorpayPaymentProvider({keyId:"key",keySecret:"secret"},lookup as typeof fetch);await expect(provider.lookup("order_123")).resolves.toMatchObject({status:"CAPTURED",gatewayPaymentId:"pay_123",amount:1250.45});const outage=new RazorpayPaymentProvider({keyId:"key",keySecret:"secret"},vi.fn(async()=>new Response(JSON.stringify({error:{code:"SERVER_ERROR"}}),{status:503,headers:{"content-type":"application/json"}})) as typeof fetch);await expect(outage.createOrder({orderId:"internal",amount:{amount:100,currency:"INR"},idempotencyKey:"key"})).rejects.toMatchObject({code:"PAYMENT_PROVIDER_ERROR",details:{category:"GATEWAY_UNAVAILABLE",retryable:true}})});
 });

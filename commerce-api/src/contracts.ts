@@ -14,6 +14,7 @@ export interface PaymentProvider {
     amount: Money;
     idempotencyKey: string;
   }): Promise<{ refundId: string }>;
+  lookup(externalOrderId:string):Promise<import("./payment-lifecycle.js").GatewayStatus>;
 }
 export interface ShippingProvider {
   rates(input: {

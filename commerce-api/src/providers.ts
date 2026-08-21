@@ -1,11 +1,12 @@
 import crypto from "node:crypto";
 import type { Money, PaymentProvider, ShippingProvider } from "./contracts.js";
 import { AppError } from "./errors.js";
+import {classifyGatewayFailure,type GatewayStatus} from "./payment-lifecycle.js";
 
 type FetchLike = typeof fetch;
 async function providerJson(response: Response) {
   const body = await response.json().catch(() => ({})) as Record<string, unknown>;
-  if (!response.ok) throw new AppError(502, "PROVIDER_ERROR", "The configured provider rejected the request", { status: response.status, providerCode: body.error && typeof body.error === "object" ? (body.error as Record<string, unknown>).code : undefined });
+  if (!response.ok){const providerCode=String(body.error&&typeof body.error==="object"?(body.error as Record<string,unknown>).code||"":""),classification=classifyGatewayFailure(response.status,providerCode);throw new AppError(classification.retryable?503:422,"PAYMENT_PROVIDER_ERROR","The payment gateway rejected the request",{status:response.status,providerCode,...classification})}
   return body;
 }
 
@@ -31,6 +32,7 @@ export class RazorpayPaymentProvider implements PaymentProvider {
     if (typeof body.id !== "string") throw new AppError(502, "INVALID_PROVIDER_RESPONSE", "Razorpay response did not contain a refund ID");
     return { refundId: body.id };
   }
+  async lookup(externalOrderId:string):Promise<GatewayStatus>{const body=await providerJson(await this.request(`https://api.razorpay.com/v1/orders/${encodeURIComponent(externalOrderId)}/payments`,{headers:{authorization:this.authorization}})),items=Array.isArray(body.items)?body.items as Array<Record<string,unknown>>:[],payment=items.find(item=>item.status==="captured")||items.find(item=>item.status==="authorized")||items[0];if(!payment)return {status:"PENDING"};const status=String(payment.status||"").toUpperCase();return {status:(["CAPTURED","AUTHORIZED","FAILED","REFUNDED"].includes(status)?status:"PENDING") as GatewayStatus["status"],gatewayPaymentId:String(payment.id||"")||undefined,amount:Number(payment.amount||0)/100,currency:String(payment.currency||"INR"),errorCode:String(payment.error_code||"")||undefined,errorDescription:String(payment.error_description||"")||undefined}}
 }
 export class DevelopmentPaymentProvider implements PaymentProvider {
   async createOrder(input: {
@@ -65,6 +67,7 @@ export class DevelopmentPaymentProvider implements PaymentProvider {
       refundId: `test_ref_${crypto.createHash("sha256").update(input.idempotencyKey).digest("hex").slice(0, 16)}`,
     };
   }
+  async lookup(_externalOrderId:string):Promise<GatewayStatus>{return {status:"PENDING"}}
 }
 export class DevelopmentShippingProvider implements ShippingProvider {
   async rates(input: {

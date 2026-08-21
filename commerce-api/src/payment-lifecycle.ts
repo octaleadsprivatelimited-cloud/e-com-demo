@@ -1,0 +1,6 @@
+import {z} from "zod";
+export const paymentClientEventSchema=z.object({orderNumber:z.string().trim().min(3).max(40),providerOrderId:z.string().trim().min(3).max(200),type:z.enum(["CANCELLED","FAILED"]),gatewayPaymentId:z.string().trim().max(200).optional(),errorCode:z.string().trim().max(100).optional(),errorDescription:z.string().trim().max(300).optional()});
+export const paymentRetrySchema=z.object({orderNumber:z.string().trim().min(3).max(40),provider:z.string().trim().min(2).max(40),contact:z.string().trim().min(3).max(254)});
+export const paymentReconcileSchema=z.object({paymentId:z.string().uuid()});
+export type GatewayStatus={status:"CREATED"|"PENDING"|"AUTHORIZED"|"CAPTURED"|"FAILED"|"CANCELLED"|"REFUNDED"|"PARTIALLY_REFUNDED";gatewayPaymentId?:string;amount?:number;currency?:string;errorCode?:string;errorDescription?:string};
+export function classifyGatewayFailure(status:number,providerCode?:string){if(status===429)return {category:"RATE_LIMIT",retryable:true};if(status>=500)return {category:"GATEWAY_UNAVAILABLE",retryable:true};if(["BAD_REQUEST_ERROR","PAYMENT_DECLINED","CARD_DECLINED"].includes(providerCode||""))return {category:"DECLINED",retryable:false};if(status===401||status===403)return {category:"CONFIGURATION",retryable:false};return {category:"PROVIDER_REJECTED",retryable:false}}
