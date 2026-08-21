@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Bell, ChevronDown, Menu, Search, ShoppingBag, X } from "lucide-react";
 import { Link } from "@tanstack/react-router";
+import { useStorefrontConfig } from "@/lib/storefront-config";
 
 export function PortalShell({
   title,
@@ -8,6 +9,9 @@ export function PortalShell({
   nav,
   active,
   onNavigate,
+  portalPath = "/admin",
+  userName = "Maya Kapoor",
+  userRole = "Store administrator",
   children,
 }: {
   title: string;
@@ -15,9 +19,37 @@ export function PortalShell({
   nav: Array<[string, ReactNode]>;
   active: string;
   onNavigate?: (label: string) => void;
+  portalPath?: "/admin" | "/account";
+  userName?: string;
+  userRole?: string;
   children: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const storefront = useStorefrontConfig();
+  const storeInitials = storefront.storeName
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  const userInitials = userName
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  const brand = (
+    <>
+      {storefront.logoUrl ? (
+        <img src={storefront.logoUrl} alt={storefront.storeName} />
+      ) : (
+        <>
+          <i>{storeInitials}</i>
+          <span>{storefront.storeName}</span>
+        </>
+      )}
+    </>
+  );
   return (
     <div className={`portal${menuOpen ? " portal-drawer-open" : ""}`}>
       {menuOpen && (
@@ -30,10 +62,7 @@ export function PortalShell({
       <aside>
         <div className="portal-mobile-head">
           <a href="/" className="portal-logo">
-            <i>AR</i>
-            <span>
-              ASTER <b>&</b> ROW
-            </span>
+            {brand}
           </a>
           <button
             aria-label="Close navigation"
@@ -43,16 +72,13 @@ export function PortalShell({
           </button>
         </div>
         <a href="/" className="portal-logo portal-desktop-logo">
-          <i>AR</i>
-          <span>
-            ASTER <b>&</b> ROW
-          </span>
+          {brand}
         </a>
         <div className="portal-nav">
           {nav.map(([label, icon]) => (
             <Link
               aria-label={label}
-              to="/admin"
+              to={portalPath}
               search={{ tab: label }}
               preload="intent"
               onClick={() => {
@@ -69,10 +95,10 @@ export function PortalShell({
           ))}
         </div>
         <div className="portal-user">
-          <div>MK</div>
+          <div>{userInitials}</div>
           <span>
-            <b>Maya Kapoor</b>
-            <small>Store administrator</small>
+            <b>{userName}</b>
+            <small>{userRole}</small>
           </span>
           <ChevronDown />
         </div>

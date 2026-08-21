@@ -58,11 +58,20 @@ import {
 import { hashPassword, verifyPassword } from "./passwords.js";
 import { PrismaPersistence } from "./persistence.js";
 import { assertOrderTransition } from "./order-state.js";
-import { defaultStorefrontConfig, normalizeHostname, storefrontSettingKey, type StorefrontConfig } from "./storefront-config.js";
-import { activeCampaign, defaultPromotionConfig, type PromotionConfig } from "./promotions.js";
+import {
+  defaultStorefrontConfig,
+  normalizeHostname,
+  storefrontSettingKey,
+  type StorefrontConfig,
+} from "./storefront-config.js";
+import {
+  activeCampaign,
+  defaultPromotionConfig,
+  type PromotionConfig,
+} from "./promotions.js";
 import { verifyGoogleIdToken } from "./google-auth.js";
-import {convertProductImage,productImageUpload} from "./image-upload.js";
-import {generateInvoicePdf} from "./invoice.js";
+import { convertProductImage, productImageUpload } from "./image-upload.js";
+import { generateInvoicePdf } from "./invoice.js";
 
 const ok = (
   res: express.Response,
@@ -83,7 +92,8 @@ function limiter(limit: number, windowMs: number): express.RequestHandler {
       for (const [candidate, value] of buckets) {
         if (value.reset <= now) buckets.delete(candidate);
       }
-      while (buckets.size >= 10_000) buckets.delete(buckets.keys().next().value!);
+      while (buckets.size >= 10_000)
+        buckets.delete(buckets.keys().next().value!);
     }
     buckets.set(key, bucket);
     if (bucket.count > limit)
@@ -110,7 +120,11 @@ export async function createApp(overrides?: {
     vault = new SecretVault(config.INTEGRATION_ENCRYPTION_KEY),
     developmentPayments = new DevelopmentPaymentProvider(),
     developmentShipping = new DevelopmentShippingProvider();
-  const googleVerifier=overrides?.googleVerifier||verifyGoogleIdToken, mobileChallenges=new Map<string,{hash:string;expiresAt:number;attempts:number}>();
+  const googleVerifier = overrides?.googleVerifier || verifyGoogleIdToken,
+    mobileChallenges = new Map<
+      string,
+      { hash: string; expiresAt: number; attempts: number }
+    >();
   const developmentStorefronts = new Map<string, StorefrontConfig>();
   const developmentPromotions = new Map<string, PromotionConfig>();
   if (persistence) {
@@ -118,21 +132,58 @@ export async function createApp(overrides?: {
     await persistence.hydrate(store);
   } else seedStore(store);
   const resolvePaymentProvider = (requested: string) => {
-    const integration = [...store.integrations.values()].filter((entry) => entry.kind === "PAYMENT" && entry.enabled && entry.provider.toLowerCase() === requested.toLowerCase()).sort((a, b) => a.priority - b.priority)[0];
+    const integration = [...store.integrations.values()]
+      .filter(
+        (entry) =>
+          entry.kind === "PAYMENT" &&
+          entry.enabled &&
+          entry.provider.toLowerCase() === requested.toLowerCase(),
+      )
+      .sort((a, b) => a.priority - b.priority)[0];
     if (integration?.provider.toLowerCase() === "razorpay") {
-      const secrets = vault.decrypt<Record<string, string>>(integration.encryptedCredentials);
-      return new RazorpayPaymentProvider({ keyId: secrets.keyId || secrets.key_id || "", keySecret: secrets.keySecret || secrets.key_secret || "" });
+      const secrets = vault.decrypt<Record<string, string>>(
+        integration.encryptedCredentials,
+      );
+      return new RazorpayPaymentProvider({
+        keyId: secrets.keyId || secrets.key_id || "",
+        keySecret: secrets.keySecret || secrets.key_secret || "",
+      });
     }
-    if (config.NODE_ENV === "production") throw new AppError(503, "PAYMENT_NOT_CONFIGURED", `Payment provider ${requested} is not enabled`);
+    if (config.NODE_ENV === "production")
+      throw new AppError(
+        503,
+        "PAYMENT_NOT_CONFIGURED",
+        `Payment provider ${requested} is not enabled`,
+      );
     return developmentPayments;
   };
   const resolveShippingProvider = () => {
-    const integration = [...store.integrations.values()].filter((entry) => entry.kind === "SHIPPING" && entry.enabled).sort((a, b) => a.priority - b.priority)[0];
+    const integration = [...store.integrations.values()]
+      .filter((entry) => entry.kind === "SHIPPING" && entry.enabled)
+      .sort((a, b) => a.priority - b.priority)[0];
     if (integration?.provider.toLowerCase() === "shiprocket") {
-      const secrets = vault.decrypt<Record<string, string>>(integration.encryptedCredentials);
-      return { name: "shiprocket", provider: new ShiprocketShippingProvider({ token: secrets.token || secrets.apiKey || "", pickupPostcode: String(integration.publicConfig.pickupPostcode || "500001"), pickupLocation: String(integration.publicConfig.pickupLocation || "Primary") }) };
+      const secrets = vault.decrypt<Record<string, string>>(
+        integration.encryptedCredentials,
+      );
+      return {
+        name: "shiprocket",
+        provider: new ShiprocketShippingProvider({
+          token: secrets.token || secrets.apiKey || "",
+          pickupPostcode: String(
+            integration.publicConfig.pickupPostcode || "500001",
+          ),
+          pickupLocation: String(
+            integration.publicConfig.pickupLocation || "Primary",
+          ),
+        }),
+      };
     }
-    if (config.NODE_ENV === "production") throw new AppError(503, "SHIPPING_NOT_CONFIGURED", "No live shipping provider is enabled");
+    if (config.NODE_ENV === "production")
+      throw new AppError(
+        503,
+        "SHIPPING_NOT_CONFIGURED",
+        "No live shipping provider is enabled",
+      );
     return { name: "development", provider: developmentShipping };
   };
   if (
@@ -182,11 +233,30 @@ export async function createApp(overrides?: {
     express.raw({ type: "application/json", limit: "1mb" }),
     async (req, res, next) => {
       try {
-        const provider = String(req.params.provider), raw = req.body as Buffer,
-          integration = [...store.integrations.values()].filter((entry) => ["PAYMENT", "SHIPPING"].includes(entry.kind) && entry.enabled && entry.provider.toLowerCase() === provider.toLowerCase()).sort((a, b) => a.priority - b.priority)[0],
-          integrationSecrets = integration ? vault.decrypt<Record<string, string>>(integration.encryptedCredentials) : undefined,
-          signature = String(req.headers["x-webhook-signature"] || req.headers["x-razorpay-signature"] || ""),
-          secret = integrationSecrets?.webhookSecret || integrationSecrets?.webhook_secret || process.env[`${provider.toUpperCase()}_WEBHOOK_SECRET`];
+        const provider = String(req.params.provider),
+          raw = req.body as Buffer,
+          integration = [...store.integrations.values()]
+            .filter(
+              (entry) =>
+                ["PAYMENT", "SHIPPING"].includes(entry.kind) &&
+                entry.enabled &&
+                entry.provider.toLowerCase() === provider.toLowerCase(),
+            )
+            .sort((a, b) => a.priority - b.priority)[0],
+          integrationSecrets = integration
+            ? vault.decrypt<Record<string, string>>(
+                integration.encryptedCredentials,
+              )
+            : undefined,
+          signature = String(
+            req.headers["x-webhook-signature"] ||
+              req.headers["x-razorpay-signature"] ||
+              "",
+          ),
+          secret =
+            integrationSecrets?.webhookSecret ||
+            integrationSecrets?.webhook_secret ||
+            process.env[`${provider.toUpperCase()}_WEBHOOK_SECRET`];
         if (!secret || !verifyHmac(req.body as Buffer, signature, secret))
           throw new AppError(
             401,
@@ -204,39 +274,176 @@ export async function createApp(overrides?: {
           );
         }
         const eventType = String(payload.type || payload.event || ""),
-          integrationKind = integration?.kind || (provider.toLowerCase() === "razorpay" ? "PAYMENT" : provider.toLowerCase() === "shiprocket" ? "SHIPPING" : undefined),
+          integrationKind =
+            integration?.kind ||
+            (provider.toLowerCase() === "razorpay"
+              ? "PAYMENT"
+              : provider.toLowerCase() === "shiprocket"
+                ? "SHIPPING"
+                : undefined),
           paymentEvent = eventType.startsWith("payment."),
           shippingEvent = eventType.startsWith("shipment."),
-          suppliedOrderId = String(payload.orderId || payload.payload?.payment?.entity?.notes?.internalOrderId || payload.payload?.order?.entity?.notes?.internalOrderId || ""),
-          eventId = String(req.headers["x-event-id"] || req.headers["x-razorpay-event-id"] || payload.id || payload.payload?.payment?.entity?.id || "");
-        if (!eventId) throw new AppError(400, "MISSING_EVENT_ID", "Webhook event ID is required");
-        if ((paymentEvent && integrationKind !== "PAYMENT") || (shippingEvent && integrationKind !== "SHIPPING") || (!paymentEvent && !shippingEvent))
-          throw new AppError(422, "WEBHOOK_EVENT_NOT_ALLOWED", "This provider is not authorized for the event type");
-        if (store.webhookIds.has(`${provider}:${eventId}`)) return ok(res, { duplicate: true }, "Already processed");
-        let orderId = suppliedOrderId, paymentId: string | undefined, shipmentId: string | undefined;
+          suppliedOrderId = String(
+            payload.orderId ||
+              payload.payload?.payment?.entity?.notes?.internalOrderId ||
+              payload.payload?.order?.entity?.notes?.internalOrderId ||
+              "",
+          ),
+          eventId = String(
+            req.headers["x-event-id"] ||
+              req.headers["x-razorpay-event-id"] ||
+              payload.id ||
+              payload.payload?.payment?.entity?.id ||
+              "",
+          );
+        if (!eventId)
+          throw new AppError(
+            400,
+            "MISSING_EVENT_ID",
+            "Webhook event ID is required",
+          );
+        if (
+          (paymentEvent && integrationKind !== "PAYMENT") ||
+          (shippingEvent && integrationKind !== "SHIPPING") ||
+          (!paymentEvent && !shippingEvent)
+        )
+          throw new AppError(
+            422,
+            "WEBHOOK_EVENT_NOT_ALLOWED",
+            "This provider is not authorized for the event type",
+          );
+        if (store.webhookIds.has(`${provider}:${eventId}`))
+          return ok(res, { duplicate: true }, "Already processed");
+        let orderId = suppliedOrderId,
+          paymentId: string | undefined,
+          shipmentId: string | undefined;
         if (persistence && paymentEvent) {
-          const externalOrderId = String(payload.payload?.payment?.entity?.order_id || payload.payload?.order?.entity?.id || "");
-          if (!externalOrderId) throw new AppError(400, "PAYMENT_REFERENCE_REQUIRED", "Provider payment order reference is required");
-          const bound = await persistence.resolvePaymentWebhook(provider, externalOrderId);
-          if (suppliedOrderId && suppliedOrderId !== bound.orderId) throw new AppError(422, "WEBHOOK_RESOURCE_MISMATCH", "Payment does not belong to the supplied order");
-          orderId = bound.orderId; paymentId = bound.paymentId;
+          const externalOrderId = String(
+            payload.payload?.payment?.entity?.order_id ||
+              payload.payload?.order?.entity?.id ||
+              "",
+          );
+          if (!externalOrderId)
+            throw new AppError(
+              400,
+              "PAYMENT_REFERENCE_REQUIRED",
+              "Provider payment order reference is required",
+            );
+          const bound = await persistence.resolvePaymentWebhook(
+            provider,
+            externalOrderId,
+          );
+          if (suppliedOrderId && suppliedOrderId !== bound.orderId)
+            throw new AppError(
+              422,
+              "WEBHOOK_RESOURCE_MISMATCH",
+              "Payment does not belong to the supplied order",
+            );
+          orderId = bound.orderId;
+          paymentId = bound.paymentId;
         }
         if (persistence && shippingEvent) {
           const awb = String(payload.awb || payload.awb_code || "");
-          if (!awb) throw new AppError(400, "SHIPMENT_REFERENCE_REQUIRED", "Shipment AWB is required");
+          if (!awb)
+            throw new AppError(
+              400,
+              "SHIPMENT_REFERENCE_REQUIRED",
+              "Shipment AWB is required",
+            );
           const bound = await persistence.resolveShipmentWebhook(provider, awb);
-          if (suppliedOrderId && suppliedOrderId !== bound.orderId) throw new AppError(422, "WEBHOOK_RESOURCE_MISMATCH", "Shipment does not belong to the supplied order");
+          if (suppliedOrderId && suppliedOrderId !== bound.orderId)
+            throw new AppError(
+              422,
+              "WEBHOOK_RESOURCE_MISMATCH",
+              "Shipment does not belong to the supplied order",
+            );
           orderId = bound.orderId;
           shipmentId = bound.shipmentId;
         }
-        const target = eventType === "payment.captured" ? "PAID" : eventType === "payment.failed" ? "FAILED" : eventType === "payment.refunded" ? "REFUNDED" : eventType === "shipment.out_for_delivery" ? "OUT_FOR_DELIVERY" : eventType === "shipment.delivered" ? "DELIVERED" : undefined,
+        const target =
+            eventType === "payment.captured"
+              ? "PAID"
+              : eventType === "payment.failed"
+                ? "FAILED"
+                : eventType === "payment.refunded"
+                  ? "REFUNDED"
+                  : eventType === "shipment.out_for_delivery"
+                    ? "OUT_FOR_DELIVERY"
+                    : eventType === "shipment.delivered"
+                      ? "DELIVERED"
+                      : undefined,
           order = orderId ? store.orders.get(orderId) : undefined;
-        if (!target) throw new AppError(422, "WEBHOOK_EVENT_NOT_SUPPORTED", "Webhook event type is not supported");
-        if (target && !order) throw new AppError(404, "ORDER_NOT_FOUND", "Webhook order was not found");
+        if (!target)
+          throw new AppError(
+            422,
+            "WEBHOOK_EVENT_NOT_SUPPORTED",
+            "Webhook event type is not supported",
+          );
+        if (target && !order)
+          throw new AppError(
+            404,
+            "ORDER_NOT_FOUND",
+            "Webhook order was not found",
+          );
         if (target && order) assertOrderTransition(order.status, target);
-        const persisted = await persistence?.processWebhook({ provider, eventId, payloadHash: crypto.createHash("sha256").update(raw).digest("hex"), orderId: order?.id, from: order?.status, to: target, paymentId, paymentStatus: paymentId ? (target === "PAID" ? "CAPTURED" : target === "REFUNDED" ? "REFUNDED" : "FAILED") : undefined, paymentAmount: Number(payload.payload?.payment?.entity?.amount || 0) / 100, paymentErrorCode: String(payload.payload?.payment?.entity?.error_code || "") || undefined, paymentErrorDescription: String(payload.payload?.payment?.entity?.error_description || "") || undefined, externalPaymentId: String(payload.payload?.payment?.entity?.id || "") || undefined, shipmentId, shipmentStatus: shipmentId ? target : undefined, location: typeof payload.location === "string" ? payload.location : undefined, occurredAt: payload.current_timestamp ? new Date(payload.current_timestamp) : undefined, safePayload: { type: eventType, orderId: orderId || undefined } });
-        if (persisted?.duplicate) return ok(res, { duplicate: true }, "Already processed");
+        const persisted = await persistence?.processWebhook({
+          provider,
+          eventId,
+          payloadHash: crypto.createHash("sha256").update(raw).digest("hex"),
+          orderId: order?.id,
+          from: order?.status,
+          to: target,
+          paymentId,
+          paymentStatus: paymentId
+            ? target === "PAID"
+              ? "CAPTURED"
+              : target === "REFUNDED"
+                ? "REFUNDED"
+                : "FAILED"
+            : undefined,
+          paymentAmount:
+            Number(payload.payload?.payment?.entity?.amount || 0) / 100,
+          paymentErrorCode:
+            String(payload.payload?.payment?.entity?.error_code || "") ||
+            undefined,
+          paymentErrorDescription:
+            String(payload.payload?.payment?.entity?.error_description || "") ||
+            undefined,
+          externalPaymentId:
+            String(payload.payload?.payment?.entity?.id || "") || undefined,
+          shipmentId,
+          shipmentStatus: shipmentId ? target : undefined,
+          location:
+            typeof payload.location === "string" ? payload.location : undefined,
+          occurredAt: payload.current_timestamp
+            ? new Date(payload.current_timestamp)
+            : undefined,
+          safePayload: { type: eventType, orderId: orderId || undefined },
+        });
+        if (persisted?.duplicate)
+          return ok(res, { duplicate: true }, "Already processed");
         if (target && order) {
+          if (paymentEvent && order.payment) {
+            order.payment.status =
+              target === "PAID"
+                ? "CAPTURED"
+                : target === "REFUNDED"
+                  ? "REFUNDED"
+                  : "FAILED";
+            order.payment.gatewayTransactionId =
+              String(payload.payload?.payment?.entity?.id || "") ||
+              order.payment.gatewayTransactionId;
+            if (target === "FAILED")
+              order.payment.lastError = {
+                code:
+                  String(payload.payload?.payment?.entity?.error_code || "") ||
+                  undefined,
+                description:
+                  String(
+                    payload.payload?.payment?.entity?.error_description || "",
+                  ) || undefined,
+              };
+          }
           store.transitionOrder(order.id, target, undefined, provider);
         }
         store.webhookIds.add(`${provider}:${eventId}`);
@@ -247,27 +454,292 @@ export async function createApp(overrides?: {
     },
   );
   app.use(express.json({ limit: "1mb" }));
-  app.use("/uploads",express.static(config.UPLOAD_DIR,{fallthrough:false,immutable:true,maxAge:"1y",dotfiles:"deny",index:false}));
-  const requestHostname = (req: express.Request) => normalizeHostname(String(req.headers["x-forwarded-host"] || req.headers.host || req.hostname));
+  app.use(
+    "/uploads",
+    express.static(config.UPLOAD_DIR, {
+      fallthrough: false,
+      immutable: true,
+      maxAge: "1y",
+      dotfiles: "deny",
+      index: false,
+    }),
+  );
+  const requestHostname = (req: express.Request) =>
+    normalizeHostname(
+      String(
+        req.headers["x-forwarded-host"] || req.headers.host || req.hostname,
+      ),
+    );
   const readStorefront = async (hostname: string) => {
     const exactKey = storefrontSettingKey(hostname);
-    const stored = persistence ? await persistence.getSetting<StorefrontConfig>(exactKey) : developmentStorefronts.get(exactKey);
-    const fallback = persistence ? await persistence.getSetting<StorefrontConfig>(storefrontSettingKey("localhost")) : developmentStorefronts.get(storefrontSettingKey("localhost"));
-    return storefrontConfigSchema.parse(stored || fallback || defaultStorefrontConfig);
+    const stored = persistence
+      ? await persistence.getSetting<StorefrontConfig>(exactKey)
+      : developmentStorefronts.get(exactKey);
+    const fallback = persistence
+      ? await persistence.getSetting<StorefrontConfig>(
+          storefrontSettingKey("localhost"),
+        )
+      : developmentStorefronts.get(storefrontSettingKey("localhost"));
+    return storefrontConfigSchema.parse(
+      stored || fallback || defaultStorefrontConfig,
+    );
   };
-  app.get("/api/v1/storefront/config", async (req, res) => ok(res, await readStorefront(requestHostname(req))));
-  const promotionKey=(hostname:string)=>`promotions:${normalizeHostname(hostname)}`;
-  const readPromotions=async(hostname:string)=>persistence?await persistence.getSetting<PromotionConfig>(promotionKey(hostname))||await persistence.getSetting<PromotionConfig>(promotionKey("localhost"))||defaultPromotionConfig:developmentPromotions.get(promotionKey(hostname))||developmentPromotions.get(promotionKey("localhost"))||defaultPromotionConfig;
-  app.get("/api/v1/storefront/promotions",async(req,res)=>{const returning=req.query.returning==="true",settings=promotionConfigSchema.parse(await readPromotions(requestHostname(req)));return ok(res,{announcementBars:settings.announcementBars.filter(x=>activeCampaign(x,returning)),banners:settings.banners.filter(x=>activeCampaign(x,returning)),popups:settings.popups.filter(x=>activeCampaign(x,returning))})});
-  app.post("/api/v1/storefront/recommendations",validate(recommendationRequestSchema),async(req,res)=>{const {viewedProductIds,cartProductIds,categories,limit}=req.body,products=store.listProducts().filter(product=>product.status==="ACTIVE"),affinity=new Map<string,number>();for(const id of [...viewedProductIds,...cartProductIds]){const product=products.find(candidate=>candidate.id===id);if(product)affinity.set(product.category,(affinity.get(product.category)||0)+(cartProductIds.includes(id)?4:2))}for(const category of categories)affinity.set(category,(affinity.get(category)||0)+1);const excluded=new Set(cartProductIds),ranked=products.filter(product=>!excluded.has(product.id)).map(product=>({product,score:(affinity.get(product.category)||0)*10+product.variants.reduce((sum,variant)=>sum+variant.stock-variant.reserved,0)/1000,reason:affinity.has(product.category)?`Because you explored ${product.category}`:"Popular in the store"})).sort((a,b)=>b.score-a.score).slice(0,limit);return ok(res,ranked)});
+  app.get("/api/v1/storefront/config", async (req, res) =>
+    ok(res, await readStorefront(requestHostname(req))),
+  );
+  const promotionKey = (hostname: string) =>
+    `promotions:${normalizeHostname(hostname)}`;
+  const readPromotions = async (hostname: string) =>
+    persistence
+      ? (await persistence.getSetting<PromotionConfig>(
+          promotionKey(hostname),
+        )) ||
+        (await persistence.getSetting<PromotionConfig>(
+          promotionKey("localhost"),
+        )) ||
+        defaultPromotionConfig
+      : developmentPromotions.get(promotionKey(hostname)) ||
+        developmentPromotions.get(promotionKey("localhost")) ||
+        defaultPromotionConfig;
+  app.get("/api/v1/storefront/promotions", async (req, res) => {
+    const returning = req.query.returning === "true",
+      settings = promotionConfigSchema.parse(
+        await readPromotions(requestHostname(req)),
+      );
+    return ok(res, {
+      announcementBars: settings.announcementBars.filter((x) =>
+        activeCampaign(x, returning),
+      ),
+      banners: settings.banners.filter((x) => activeCampaign(x, returning)),
+      popups: settings.popups.filter((x) => activeCampaign(x, returning)),
+    });
+  });
+  app.post(
+    "/api/v1/storefront/recommendations",
+    validate(recommendationRequestSchema),
+    async (req, res) => {
+      const { viewedProductIds, cartProductIds, categories, limit } = req.body,
+        products = store
+          .listProducts()
+          .filter((product) => product.status === "ACTIVE"),
+        affinity = new Map<string, number>();
+      for (const id of [...viewedProductIds, ...cartProductIds]) {
+        const product = products.find((candidate) => candidate.id === id);
+        if (product)
+          affinity.set(
+            product.category,
+            (affinity.get(product.category) || 0) +
+              (cartProductIds.includes(id) ? 4 : 2),
+          );
+      }
+      for (const category of categories)
+        affinity.set(category, (affinity.get(category) || 0) + 1);
+      const excluded = new Set(cartProductIds),
+        ranked = products
+          .filter((product) => !excluded.has(product.id))
+          .map((product) => ({
+            product,
+            score:
+              (affinity.get(product.category) || 0) * 10 +
+              product.variants.reduce(
+                (sum, variant) => sum + variant.stock - variant.reserved,
+                0,
+              ) /
+                1000,
+            reason: affinity.has(product.category)
+              ? `Because you explored ${product.category}`
+              : "Popular in the store",
+          }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, limit);
+      return ok(res, ranked);
+    },
+  );
   app.get("/health", (_req, res) =>
     ok(res, { status: "healthy", time: new Date().toISOString() }),
   );
-  const issueCustomerSession=async(user:StoredUser,res:express.Response)=>{const principal:Principal={sub:user.id,role:user.role,permissions:user.permissions},accessToken=signAccessToken(principal,config.JWT_SECRET),sessionId=crypto.randomUUID(),refreshToken=jwt.sign({...principal,jti:sessionId},config.JWT_REFRESH_SECRET,{algorithm:"HS256",expiresIn:"7d",issuer:"aster-commerce",audience:"store-refresh"});store.sessions.set(sessionId,{userId:user.id,expiresAt:Date.now()+604800000});await persistence?.saveSession(sessionId,user.id,Date.now()+604800000);res.cookie("refresh_token",refreshToken,{httpOnly:true,secure:config.NODE_ENV==="production",sameSite:"strict",path:"/api/v1/auth",maxAge:604800000});return {accessToken,user:{id:user.id,name:user.name,email:user.email,mobile:user.mobile,role:user.role}}};
-  app.get("/api/v1/auth/providers",(_req,res)=>ok(res,{google:{enabled:Boolean(config.GOOGLE_CLIENT_ID),clientId:config.GOOGLE_CLIENT_ID},mobileOtp:{enabled:true}}));
-  app.post("/api/v1/auth/mobile/request",limiter(5,60000),validate(mobileOtpRequestSchema),async(req,res)=>{const code=String(crypto.randomInt(0,1_000_000)).padStart(6,"0"),hash=crypto.createHmac("sha256",config.JWT_SECRET).update(`${req.body.mobile}:${code}`).digest("hex");mobileChallenges.set(req.body.mobile,{hash,expiresAt:Date.now()+300000,attempts:0});if(persistence)await persistence.queueNotification({channel:"SMS",template:"auth.mobile_otp",destination:req.body.mobile,payload:{code,expiresInMinutes:5}});return ok(res,{expiresInSeconds:300,...(config.NODE_ENV!=="production"?{developmentCode:code}:{})},"If the number can receive messages, a code has been sent")});
-  app.post("/api/v1/auth/mobile/verify",limiter(10,60000),validate(mobileOtpVerifySchema),async(req,res)=>{const challenge=mobileChallenges.get(req.body.mobile),submitted=crypto.createHmac("sha256",config.JWT_SECRET).update(`${req.body.mobile}:${req.body.code}`).digest("hex");if(!challenge||challenge.expiresAt<Date.now()||challenge.attempts>=5||!crypto.timingSafeEqual(Buffer.from(challenge.hash),Buffer.from(submitted))){if(challenge)challenge.attempts++;throw new AppError(401,"INVALID_OTP","The code is invalid or expired")}mobileChallenges.delete(req.body.mobile);let user=store.findUserByMobile(req.body.mobile);if(user&&user.role!=="CUSTOMER")throw new AppError(403,"CUSTOMER_LOGIN_ONLY","Use staff sign-in for this account");if(!user){user=store.createUser({name:req.body.name||`Customer ${req.body.mobile.slice(-4)}`,email:`mobile-${crypto.createHash("sha256").update(req.body.mobile).digest("hex").slice(0,20)}@account.local`,mobile:req.body.mobile,passwordHash:await hashPassword(crypto.randomBytes(32).toString("hex")),role:"CUSTOMER",permissions:[]});await persistence?.saveUser(user)}return ok(res,await issueCustomerSession(user,res),"Mobile number verified")});
-  app.post("/api/v1/auth/google",limiter(10,60000),validate(googleLoginSchema),async(req,res)=>{if(!config.GOOGLE_CLIENT_ID)throw new AppError(503,"GOOGLE_AUTH_NOT_CONFIGURED","Google sign-in is not configured");const claims=await googleVerifier(req.body.credential,config.GOOGLE_CLIENT_ID);let user=store.findUser(claims.email);if(user&&user.role!=="CUSTOMER")throw new AppError(403,"CUSTOMER_LOGIN_ONLY","Use staff sign-in for this account");if(!user){user=store.createUser({name:claims.name||claims.email.split("@")[0]||"Google customer",email:claims.email,passwordHash:await hashPassword(crypto.randomBytes(32).toString("hex")),role:"CUSTOMER",permissions:[]});await persistence?.saveUser(user)}return ok(res,await issueCustomerSession(user,res),"Google account verified")});
+  const issueCustomerSession = async (
+    user: StoredUser,
+    res: express.Response,
+  ) => {
+    const principal: Principal = {
+        sub: user.id,
+        role: user.role,
+        permissions: user.permissions,
+      },
+      accessToken = signAccessToken(principal, config.JWT_SECRET),
+      sessionId = crypto.randomUUID(),
+      refreshToken = jwt.sign(
+        { ...principal, jti: sessionId },
+        config.JWT_REFRESH_SECRET,
+        {
+          algorithm: "HS256",
+          expiresIn: "7d",
+          issuer: "aster-commerce",
+          audience: "store-refresh",
+        },
+      );
+    store.sessions.set(sessionId, {
+      userId: user.id,
+      expiresAt: Date.now() + 604800000,
+    });
+    await persistence?.saveSession(sessionId, user.id, Date.now() + 604800000);
+    res.cookie("refresh_token", refreshToken, {
+      httpOnly: true,
+      secure: config.NODE_ENV === "production",
+      sameSite: "strict",
+      path: "/api/v1/auth",
+      maxAge: 604800000,
+    });
+    return {
+      accessToken,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        mobile: user.mobile,
+        role: user.role,
+      },
+    };
+  };
+  app.get("/api/v1/auth/providers", (_req, res) =>
+    ok(res, {
+      google: {
+        enabled: Boolean(config.GOOGLE_CLIENT_ID),
+        clientId: config.GOOGLE_CLIENT_ID,
+      },
+      mobileOtp: { enabled: true },
+    }),
+  );
+  app.post(
+    "/api/v1/auth/mobile/request",
+    limiter(5, 60000),
+    validate(mobileOtpRequestSchema),
+    async (req, res) => {
+      const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0"),
+        hash = crypto
+          .createHmac("sha256", config.JWT_SECRET)
+          .update(`${req.body.mobile}:${code}`)
+          .digest("hex");
+      mobileChallenges.set(req.body.mobile, {
+        hash,
+        expiresAt: Date.now() + 300000,
+        attempts: 0,
+      });
+      if (persistence)
+        await persistence.queueNotification({
+          channel: "SMS",
+          template: "auth.mobile_otp",
+          destination: req.body.mobile,
+          payload: { code, expiresInMinutes: 5 },
+        });
+      return ok(
+        res,
+        {
+          expiresInSeconds: 300,
+          ...(config.NODE_ENV !== "production"
+            ? { developmentCode: code }
+            : {}),
+        },
+        "If the number can receive messages, a code has been sent",
+      );
+    },
+  );
+  app.post(
+    "/api/v1/auth/mobile/verify",
+    limiter(10, 60000),
+    validate(mobileOtpVerifySchema),
+    async (req, res) => {
+      const challenge = mobileChallenges.get(req.body.mobile),
+        submitted = crypto
+          .createHmac("sha256", config.JWT_SECRET)
+          .update(`${req.body.mobile}:${req.body.code}`)
+          .digest("hex");
+      if (
+        !challenge ||
+        challenge.expiresAt < Date.now() ||
+        challenge.attempts >= 5 ||
+        !crypto.timingSafeEqual(
+          Buffer.from(challenge.hash),
+          Buffer.from(submitted),
+        )
+      ) {
+        if (challenge) challenge.attempts++;
+        throw new AppError(
+          401,
+          "INVALID_OTP",
+          "The code is invalid or expired",
+        );
+      }
+      mobileChallenges.delete(req.body.mobile);
+      let user = store.findUserByMobile(req.body.mobile);
+      if (user && user.role !== "CUSTOMER")
+        throw new AppError(
+          403,
+          "CUSTOMER_LOGIN_ONLY",
+          "Use staff sign-in for this account",
+        );
+      if (!user) {
+        user = store.createUser({
+          name: req.body.name || `Customer ${req.body.mobile.slice(-4)}`,
+          email: `mobile-${crypto.createHash("sha256").update(req.body.mobile).digest("hex").slice(0, 20)}@account.local`,
+          mobile: req.body.mobile,
+          passwordHash: await hashPassword(
+            crypto.randomBytes(32).toString("hex"),
+          ),
+          role: "CUSTOMER",
+          permissions: [],
+        });
+        await persistence?.saveUser(user);
+      }
+      return ok(
+        res,
+        await issueCustomerSession(user, res),
+        "Mobile number verified",
+      );
+    },
+  );
+  app.post(
+    "/api/v1/auth/google",
+    limiter(10, 60000),
+    validate(googleLoginSchema),
+    async (req, res) => {
+      if (!config.GOOGLE_CLIENT_ID)
+        throw new AppError(
+          503,
+          "GOOGLE_AUTH_NOT_CONFIGURED",
+          "Google sign-in is not configured",
+        );
+      const claims = await googleVerifier(
+        req.body.credential,
+        config.GOOGLE_CLIENT_ID,
+      );
+      let user = store.findUser(claims.email);
+      if (user && user.role !== "CUSTOMER")
+        throw new AppError(
+          403,
+          "CUSTOMER_LOGIN_ONLY",
+          "Use staff sign-in for this account",
+        );
+      if (!user) {
+        user = store.createUser({
+          name: claims.name || claims.email.split("@")[0] || "Google customer",
+          email: claims.email,
+          passwordHash: await hashPassword(
+            crypto.randomBytes(32).toString("hex"),
+          ),
+          role: "CUSTOMER",
+          permissions: [],
+        });
+        await persistence?.saveUser(user);
+      }
+      return ok(
+        res,
+        await issueCustomerSession(user, res),
+        "Google account verified",
+      );
+    },
+  );
   app.post(
     "/api/v1/auth/register",
     limiter(8, 60_000),
@@ -282,7 +754,14 @@ export async function createApp(overrides?: {
           permissions: [],
         });
         await persistence?.saveUser(user);
-        if (persistence) await persistence.queueNotification({ userId: user.id, channel: "EMAIL", template: "account.registered", destination: user.email, payload: { name: user.name } });
+        if (persistence)
+          await persistence.queueNotification({
+            userId: user.id,
+            channel: "EMAIL",
+            template: "account.registered",
+            destination: user.email,
+            payload: { name: user.name },
+          });
         return ok(
           res,
           { id: user.id, name: user.name, email: user.email },
@@ -311,9 +790,21 @@ export async function createApp(overrides?: {
             "Email or password is incorrect",
           );
         if (user.totpEnabled) {
-          if (!user.totpSecretEncrypted) throw new AppError(503, "TWO_FACTOR_MISCONFIGURED", "Administrator two-factor authentication is unavailable");
-          const secret = vault.decrypt<{ secret: string }>(user.totpSecretEncrypted).secret;
-          if (!req.body.otp || !verifyTotp(secret, req.body.otp)) throw new AppError(401, "TWO_FACTOR_REQUIRED", "A valid authenticator code is required");
+          if (!user.totpSecretEncrypted)
+            throw new AppError(
+              503,
+              "TWO_FACTOR_MISCONFIGURED",
+              "Administrator two-factor authentication is unavailable",
+            );
+          const secret = vault.decrypt<{ secret: string }>(
+            user.totpSecretEncrypted,
+          ).secret;
+          if (!req.body.otp || !verifyTotp(secret, req.body.otp))
+            throw new AppError(
+              401,
+              "TWO_FACTOR_REQUIRED",
+              "A valid authenticator code is required",
+            );
         }
         const principal: Principal = {
             sub: user.id,
@@ -408,10 +899,18 @@ export async function createApp(overrides?: {
           );
         if (persistence) {
           if (!(await persistence.consumeSession(decoded.jti)))
-            throw new AppError(401, "INVALID_REFRESH_TOKEN", "Session has already been rotated");
+            throw new AppError(
+              401,
+              "INVALID_REFRESH_TOKEN",
+              "Session has already been rotated",
+            );
         } else {
           if (!store.sessions.delete(decoded.jti))
-            throw new AppError(401, "INVALID_REFRESH_TOKEN", "Session has already been rotated");
+            throw new AppError(
+              401,
+              "INVALID_REFRESH_TOKEN",
+              "Session has already been rotated",
+            );
         }
         const principal: Principal = {
           sub: user.id,
@@ -482,18 +981,77 @@ export async function createApp(overrides?: {
     return ok(res, { loggedOut: true }, "Logged out");
   });
   const auth = authenticate(config.JWT_SECRET);
-  app.get("/api/v1/admin/storefront-config", auth, authorize("settings:read"), async (req, res) => ok(res, await readStorefront(requestHostname(req))));
-  app.put("/api/v1/admin/storefront-config", auth, authorize("settings:update"), validate(storefrontConfigSchema), async (req, res) => {
-    const value = req.body as StorefrontConfig;
-    const hostname = value.primaryDomain || requestHostname(req);
-    const keys = new Set([storefrontSettingKey(hostname), storefrontSettingKey("localhost")]);
-    for (const key of keys) persistence ? await persistence.saveSetting(key, value) : developmentStorefronts.set(key, value);
-    store.auditLogs.unshift({ id: crypto.randomUUID(), action: "storefront.settings.updated", resource: "Setting", resourceId: hostname, actorId: req.principal!.sub, createdAt: new Date().toISOString() });
-    return ok(res, value, "Storefront configuration saved");
-  });
-  app.get("/api/v1/admin/promotions",auth,authorize("marketing:update"),async(req,res)=>ok(res,promotionConfigSchema.parse(await readPromotions(requestHostname(req)))));
-  app.put("/api/v1/admin/promotions",auth,authorize("marketing:update"),validate(promotionConfigSchema),async(req,res)=>{const hostname=requestHostname(req),value=req.body as PromotionConfig; persistence?await persistence.saveSetting(promotionKey(hostname),value):developmentPromotions.set(promotionKey(hostname),value);store.auditLogs.unshift({id:crypto.randomUUID(),action:"promotions.updated",resource:"Setting",resourceId:hostname,actorId:req.principal!.sub,createdAt:new Date().toISOString()});return ok(res,value,"Promotions published")});
-  app.get("/api/v1/admin/coupons",auth,authorize("marketing:update"),(_req,res)=>ok(res,[...store.coupons.values()]));
+  app.get(
+    "/api/v1/admin/storefront-config",
+    auth,
+    authorize("settings:read"),
+    async (req, res) => ok(res, await readStorefront(requestHostname(req))),
+  );
+  app.put(
+    "/api/v1/admin/storefront-config",
+    auth,
+    authorize("settings:update"),
+    validate(storefrontConfigSchema),
+    async (req, res) => {
+      const value = req.body as StorefrontConfig;
+      const hostname = value.primaryDomain || requestHostname(req);
+      const keys = new Set([
+        storefrontSettingKey(hostname),
+        storefrontSettingKey("localhost"),
+      ]);
+      for (const key of keys)
+        persistence
+          ? await persistence.saveSetting(key, value)
+          : developmentStorefronts.set(key, value);
+      store.auditLogs.unshift({
+        id: crypto.randomUUID(),
+        action: "storefront.settings.updated",
+        resource: "Setting",
+        resourceId: hostname,
+        actorId: req.principal!.sub,
+        createdAt: new Date().toISOString(),
+      });
+      return ok(res, value, "Storefront configuration saved");
+    },
+  );
+  app.get(
+    "/api/v1/admin/promotions",
+    auth,
+    authorize("marketing:update"),
+    async (req, res) =>
+      ok(
+        res,
+        promotionConfigSchema.parse(await readPromotions(requestHostname(req))),
+      ),
+  );
+  app.put(
+    "/api/v1/admin/promotions",
+    auth,
+    authorize("marketing:update"),
+    validate(promotionConfigSchema),
+    async (req, res) => {
+      const hostname = requestHostname(req),
+        value = req.body as PromotionConfig;
+      persistence
+        ? await persistence.saveSetting(promotionKey(hostname), value)
+        : developmentPromotions.set(promotionKey(hostname), value);
+      store.auditLogs.unshift({
+        id: crypto.randomUUID(),
+        action: "promotions.updated",
+        resource: "Setting",
+        resourceId: hostname,
+        actorId: req.principal!.sub,
+        createdAt: new Date().toISOString(),
+      });
+      return ok(res, value, "Promotions published");
+    },
+  );
+  app.get(
+    "/api/v1/admin/coupons",
+    auth,
+    authorize("marketing:update"),
+    (_req, res) => ok(res, [...store.coupons.values()]),
+  );
   app.get("/api/v1/auth/me", auth, (req, res) => {
     const user = store.users.get(req.principal!.sub);
     if (!user) throw new AppError(404, "USER_NOT_FOUND", "User not found");
@@ -504,51 +1062,156 @@ export async function createApp(overrides?: {
       role: user.role,
     });
   });
-  app.delete("/api/v1/account", auth, validate(accountDeletionSchema), async (req, res) => {
-    const userId = req.principal!.sub, user = store.users.get(userId);
-    if (!user) throw new AppError(404, "ACCOUNT_NOT_FOUND", "Account not found");
-    if (user.role !== "CUSTOMER") throw new AppError(403, "CUSTOMER_ACCOUNT_REQUIRED", "Staff accounts cannot be deleted here");
-    const retainedOrders = persistence ? (await persistence.deleteCustomerAccount(userId)).retainedOrders : [...store.orders.values()].filter(order => order.userId === userId).length;
-    for (const order of store.orders.values()) if (order.userId === userId) {order.userId = undefined;order.invoiceSnapshot={};}
-    for (const [id, session] of store.sessions) if (session.userId === userId) store.sessions.delete(id);
-    for (const [id, review] of store.reviews) if (review.userId === userId) store.reviews.delete(id);
-    for (const [id, request] of store.returns) if (request.userId === userId) store.returns.delete(id);
-    for (const [id, ticket] of store.supportTickets) if (ticket.userId === userId) store.supportTickets.delete(id);
-    store.addresses.delete(userId); store.wishlists.delete(userId); store.carts.delete(`user:${userId}`); store.users.delete(userId);
-    store.auditLogs.unshift({ id: crypto.randomUUID(), action: "customer.account_deleted", resource: "user", resourceId: userId, retainedOrders, personalDataRedacted: true, createdAt: new Date().toISOString() });
-    res.clearCookie("refresh_token", { path: "/api/v1/auth" });
-    return ok(res, { deleted: true, retainedOrders }, "Your account and personal data were deleted. Anonymized transaction records remain with the store owner.");
-  });
+  app.delete(
+    "/api/v1/account",
+    auth,
+    validate(accountDeletionSchema),
+    async (req, res) => {
+      const userId = req.principal!.sub,
+        user = store.users.get(userId);
+      if (!user)
+        throw new AppError(404, "ACCOUNT_NOT_FOUND", "Account not found");
+      if (user.role !== "CUSTOMER")
+        throw new AppError(
+          403,
+          "CUSTOMER_ACCOUNT_REQUIRED",
+          "Staff accounts cannot be deleted here",
+        );
+      const retainedOrders = persistence
+        ? (await persistence.deleteCustomerAccount(userId)).retainedOrders
+        : [...store.orders.values()].filter((order) => order.userId === userId)
+            .length;
+      for (const order of store.orders.values())
+        if (order.userId === userId) {
+          order.userId = undefined;
+          order.invoiceSnapshot = {};
+        }
+      for (const [id, session] of store.sessions)
+        if (session.userId === userId) store.sessions.delete(id);
+      for (const [id, review] of store.reviews)
+        if (review.userId === userId) store.reviews.delete(id);
+      for (const [id, request] of store.returns)
+        if (request.userId === userId) store.returns.delete(id);
+      for (const [id, ticket] of store.supportTickets)
+        if (ticket.userId === userId) store.supportTickets.delete(id);
+      store.addresses.delete(userId);
+      store.wishlists.delete(userId);
+      store.carts.delete(`user:${userId}`);
+      store.users.delete(userId);
+      store.auditLogs.unshift({
+        id: crypto.randomUUID(),
+        action: "customer.account_deleted",
+        resource: "user",
+        resourceId: userId,
+        retainedOrders,
+        personalDataRedacted: true,
+        createdAt: new Date().toISOString(),
+      });
+      res.clearCookie("refresh_token", { path: "/api/v1/auth" });
+      return ok(
+        res,
+        { deleted: true, retainedOrders },
+        "Your account and personal data were deleted. Anonymized transaction records remain with the store owner.",
+      );
+    },
+  );
   app.post("/api/v1/auth/admin-2fa/setup", auth, async (req, res) => {
     const user = store.users.get(req.principal!.sub);
-    if (!user || user.role === "CUSTOMER") throw new AppError(403, "FORBIDDEN", "Administrator access required");
-    const secret = base32Encode(crypto.randomBytes(20)), encrypted = vault.encrypt({ secret });
-    user.totpSecretEncrypted = encrypted; user.totpEnabled = false;
+    if (!user || user.role === "CUSTOMER")
+      throw new AppError(403, "FORBIDDEN", "Administrator access required");
+    const secret = base32Encode(crypto.randomBytes(20)),
+      encrypted = vault.encrypt({ secret });
+    user.totpSecretEncrypted = encrypted;
+    user.totpEnabled = false;
     await persistence?.saveTotp(user.id, encrypted, false);
-    return ok(res, { secret, otpauthUrl: `otpauth://totp/${encodeURIComponent(`Aster & Row:${user.email}`)}?secret=${secret}&issuer=${encodeURIComponent("Aster & Row")}&algorithm=SHA1&digits=6&period=30` }, "Scan this secret once, then verify a code");
+    return ok(
+      res,
+      {
+        secret,
+        otpauthUrl: `otpauth://totp/${encodeURIComponent(`Aster & Row:${user.email}`)}?secret=${secret}&issuer=${encodeURIComponent("Aster & Row")}&algorithm=SHA1&digits=6&period=30`,
+      },
+      "Scan this secret once, then verify a code",
+    );
   });
-  app.post("/api/v1/auth/admin-2fa/verify", auth, validate(totpVerifySchema), async (req, res) => {
-    const user = store.users.get(req.principal!.sub);
-    if (!user || user.role === "CUSTOMER" || !user.totpSecretEncrypted) throw new AppError(409, "TWO_FACTOR_SETUP_REQUIRED", "Start two-factor setup first");
-    const secret = vault.decrypt<{ secret: string }>(user.totpSecretEncrypted).secret;
-    if (!verifyTotp(secret, req.body.code)) throw new AppError(422, "INVALID_AUTHENTICATOR_CODE", "Authenticator code is invalid");
-    user.totpEnabled = true; await persistence?.saveTotp(user.id, user.totpSecretEncrypted, true);
-    return ok(res, { enabled: true }, "Administrator two-factor authentication enabled");
-  });
-  app.get("/api/v1/account/addresses", auth, async (req, res) =>
-    ok(res, persistence ? await persistence.listAddresses(req.principal!.sub) : store.addresses.get(req.principal!.sub) || []),
+  app.post(
+    "/api/v1/auth/admin-2fa/verify",
+    auth,
+    validate(totpVerifySchema),
+    async (req, res) => {
+      const user = store.users.get(req.principal!.sub);
+      if (!user || user.role === "CUSTOMER" || !user.totpSecretEncrypted)
+        throw new AppError(
+          409,
+          "TWO_FACTOR_SETUP_REQUIRED",
+          "Start two-factor setup first",
+        );
+      const secret = vault.decrypt<{ secret: string }>(
+        user.totpSecretEncrypted,
+      ).secret;
+      if (!verifyTotp(secret, req.body.code))
+        throw new AppError(
+          422,
+          "INVALID_AUTHENTICATOR_CODE",
+          "Authenticator code is invalid",
+        );
+      user.totpEnabled = true;
+      await persistence?.saveTotp(user.id, user.totpSecretEncrypted, true);
+      return ok(
+        res,
+        { enabled: true },
+        "Administrator two-factor authentication enabled",
+      );
+    },
   );
-  app.post("/api/v1/account/addresses", auth, validate(addressSchema), async (req, res) => {
-    if (persistence) return ok(res, await persistence.saveAddress(req.principal!.sub, req.body), "Address saved", 201);
-    const addresses = store.addresses.get(req.principal!.sub) || [];
-    if (req.body.isDefault) addresses.forEach(address => { address.isDefault = false; });
-    const address = { id: crypto.randomUUID(), userId: req.principal!.sub, ...req.body, createdAt: new Date().toISOString() };
-    addresses.push(address); store.addresses.set(req.principal!.sub, addresses);
-    return ok(res, address, "Address saved", 201);
-  });
+  app.get("/api/v1/account/addresses", auth, async (req, res) =>
+    ok(
+      res,
+      persistence
+        ? await persistence.listAddresses(req.principal!.sub)
+        : store.addresses.get(req.principal!.sub) || [],
+    ),
+  );
+  app.post(
+    "/api/v1/account/addresses",
+    auth,
+    validate(addressSchema),
+    async (req, res) => {
+      if (persistence)
+        return ok(
+          res,
+          await persistence.saveAddress(req.principal!.sub, req.body),
+          "Address saved",
+          201,
+        );
+      const addresses = store.addresses.get(req.principal!.sub) || [];
+      if (req.body.isDefault)
+        addresses.forEach((address) => {
+          address.isDefault = false;
+        });
+      const address = {
+        id: crypto.randomUUID(),
+        userId: req.principal!.sub,
+        ...req.body,
+        createdAt: new Date().toISOString(),
+      };
+      addresses.push(address);
+      store.addresses.set(req.principal!.sub, addresses);
+      return ok(res, address, "Address saved", 201);
+    },
+  );
   app.delete("/api/v1/account/addresses/:id", auth, async (req, res) => {
-    if (persistence) await persistence.deleteAddress(req.principal!.sub, String(req.params.id));
-    else { const addresses = store.addresses.get(req.principal!.sub) || [], next = addresses.filter(address => address.id !== req.params.id); if (next.length === addresses.length) throw new AppError(404, "ADDRESS_NOT_FOUND", "Address not found"); store.addresses.set(req.principal!.sub, next); }
+    if (persistence)
+      await persistence.deleteAddress(
+        req.principal!.sub,
+        String(req.params.id),
+      );
+    else {
+      const addresses = store.addresses.get(req.principal!.sub) || [],
+        next = addresses.filter((address) => address.id !== req.params.id);
+      if (next.length === addresses.length)
+        throw new AppError(404, "ADDRESS_NOT_FOUND", "Address not found");
+      store.addresses.set(req.principal!.sub, next);
+    }
     return ok(res, { deleted: true }, "Address removed");
   });
   app.get("/api/v1/products", (req, res) => {
@@ -571,17 +1234,96 @@ export async function createApp(overrides?: {
     ok(res, store.getProduct(String(req.params.id))),
   );
   app.get("/api/v1/products/:id/reviews", async (req, res) => {
-    const productId = String(req.params.id); store.getProduct(productId);
-    return ok(res, persistence ? await persistence.listApprovedReviews(productId) : [...store.reviews.values()].filter(review => review.productId === productId && review.status === "APPROVED"));
+    const productId = String(req.params.id);
+    store.getProduct(productId);
+    return ok(
+      res,
+      persistence
+        ? await persistence.listApprovedReviews(productId)
+        : [...store.reviews.values()].filter(
+            (review) =>
+              review.productId === productId && review.status === "APPROVED",
+          ),
+    );
   });
-  app.post("/api/v1/account/reviews", auth, validate(reviewSchema), async (req, res) => {
-    store.getProduct(req.body.productId);
-    const verified = [...store.orders.values()].some(order => order.userId === req.principal!.sub && order.status === "DELIVERED" && order.lines.some(line => { try { return store.getVariant(line.variantId).product.id === req.body.productId; } catch { return false; } }));
-    if (persistence) return ok(res, await persistence.saveReview(req.principal!.sub, req.body, verified), "Review submitted for moderation", 201);
-    if ([...store.reviews.values()].some(review => review.userId === req.principal!.sub && review.productId === req.body.productId)) throw new AppError(409, "REVIEW_EXISTS", "You have already reviewed this product");
-    const review = { id: crypto.randomUUID(), userId: req.principal!.sub, ...req.body, verified, status: "PENDING", createdAt: new Date().toISOString() }; store.reviews.set(review.id, review);
-    return ok(res, review, "Review submitted for moderation", 201);
+  app.get("/api/v1/account/reviews", auth, async (req, res) => {
+    if (persistence)
+      return ok(res, await persistence.listCustomerReviews(req.principal!.sub));
+    const reviews = [...store.reviews.values()]
+      .filter((review) => review.userId === req.principal!.sub)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((review) => {
+        const product = store.products.get(review.productId);
+        return {
+          ...review,
+          product: product
+            ? {
+                id: product.id,
+                name: product.name,
+                slug: product.slug,
+                media: product.media
+                  .filter((item) => item.type === "IMAGE")
+                  .sort((left, right) => left.position - right.position)
+                  .slice(0, 1)
+                  .map(({ url, alt }) => ({ url, alt })),
+              }
+            : { id: review.productId, name: "Unavailable product", media: [] },
+        };
+      });
+    return ok(res, reviews);
   });
+  app.post(
+    "/api/v1/account/reviews",
+    auth,
+    validate(reviewSchema),
+    async (req, res) => {
+      store.getProduct(req.body.productId);
+      const verified = [...store.orders.values()].some(
+        (order) =>
+          order.userId === req.principal!.sub &&
+          order.status === "DELIVERED" &&
+          order.lines.some((line) => {
+            try {
+              return (
+                store.getVariant(line.variantId).product.id ===
+                req.body.productId
+              );
+            } catch {
+              return false;
+            }
+          }),
+      );
+      if (persistence)
+        return ok(
+          res,
+          await persistence.saveReview(req.principal!.sub, req.body, verified),
+          "Review submitted for moderation",
+          201,
+        );
+      if (
+        [...store.reviews.values()].some(
+          (review) =>
+            review.userId === req.principal!.sub &&
+            review.productId === req.body.productId,
+        )
+      )
+        throw new AppError(
+          409,
+          "REVIEW_EXISTS",
+          "You have already reviewed this product",
+        );
+      const review = {
+        id: crypto.randomUUID(),
+        userId: req.principal!.sub,
+        ...req.body,
+        verified,
+        status: "PENDING",
+        createdAt: new Date().toISOString(),
+      };
+      store.reviews.set(review.id, review);
+      return ok(res, review, "Review submitted for moderation", 201);
+    },
+  );
   app.post(
     "/api/v1/admin/products",
     auth,
@@ -597,7 +1339,49 @@ export async function createApp(overrides?: {
       return ok(res, product, "Product created", 201);
     },
   );
-  app.post("/api/v1/admin/products/:id/media/upload",auth,authorize("products:update"),productImageUpload,async(req,res)=>{const product=store.getProduct(String(req.params.id));if(!req.file)throw new AppError(400,"IMAGE_REQUIRED","Choose an image to upload");const converted=await convertProductImage(req.file.buffer,config.UPLOAD_DIR,config.PUBLIC_UPLOAD_BASE_URL),media={id:crypto.randomUUID(),url:converted.url,alt:String(req.body.alt||product.name).trim().slice(0,200)||product.name,type:"IMAGE" as const,position:Number.isFinite(Number(req.body.position))?Math.max(0,Math.min(1000,Number(req.body.position))):product.media.length};product.media.push(media);product.media.sort((a,b)=>a.position-b.position);await persistence?.addProductMedia({id:media.id,productId:product.id,url:media.url,alt:media.alt,position:media.position});return ok(res,{media,...converted},"Image converted to WebP and attached",201)});
+  app.post(
+    "/api/v1/admin/products/:id/media/upload",
+    auth,
+    authorize("products:update"),
+    productImageUpload,
+    async (req, res) => {
+      const product = store.getProduct(String(req.params.id));
+      if (!req.file)
+        throw new AppError(400, "IMAGE_REQUIRED", "Choose an image to upload");
+      const converted = await convertProductImage(
+          req.file.buffer,
+          config.UPLOAD_DIR,
+          config.PUBLIC_UPLOAD_BASE_URL,
+        ),
+        media = {
+          id: crypto.randomUUID(),
+          url: converted.url,
+          alt:
+            String(req.body.alt || product.name)
+              .trim()
+              .slice(0, 200) || product.name,
+          type: "IMAGE" as const,
+          position: Number.isFinite(Number(req.body.position))
+            ? Math.max(0, Math.min(1000, Number(req.body.position)))
+            : product.media.length,
+        };
+      product.media.push(media);
+      product.media.sort((a, b) => a.position - b.position);
+      await persistence?.addProductMedia({
+        id: media.id,
+        productId: product.id,
+        url: media.url,
+        alt: media.alt,
+        position: media.position,
+      });
+      return ok(
+        res,
+        { media, ...converted },
+        "Image converted to WebP and attached",
+        201,
+      );
+    },
+  );
   app.put(
     "/api/v1/admin/products/:id",
     auth,
@@ -773,14 +1557,34 @@ export async function createApp(overrides?: {
             "IDEMPOTENCY_KEY_REQUIRED",
             "A valid Idempotency-Key header is required",
           );
-        const checkoutScope = req.principal?.sub || `guest:${req.ip}:${String(req.body.contact.email || req.body.contact.phone).trim().toLowerCase()}`;
-        const keyPrefix = crypto.createHash("sha256").update(`${checkoutScope}:${key}`).digest("hex");
-        const requestHash = crypto.createHash("sha256").update(JSON.stringify(req.body)).digest("hex");
+        const checkoutScope =
+          req.principal?.sub ||
+          `guest:${req.ip}:${String(
+            req.body.contact.email || req.body.contact.phone,
+          )
+            .trim()
+            .toLowerCase()}`;
+        const keyPrefix = crypto
+          .createHash("sha256")
+          .update(`${checkoutScope}:${key}`)
+          .digest("hex");
+        const requestHash = crypto
+          .createHash("sha256")
+          .update(JSON.stringify(req.body))
+          .digest("hex");
         const duplicate = store.findOrderByKey(keyPrefix);
         if (duplicate) {
           if (duplicate.idempotencyKey !== `${keyPrefix}.${requestHash}`)
-            throw new AppError(409, "IDEMPOTENCY_CONFLICT", "This idempotency key was already used for a different checkout request");
-          return ok(res, { order: duplicate, payment: duplicate.payment || null }, "Existing order returned");
+            throw new AppError(
+              409,
+              "IDEMPOTENCY_CONFLICT",
+              "This idempotency key was already used for a different checkout request",
+            );
+          return ok(
+            res,
+            { order: duplicate, payment: duplicate.payment || null },
+            "Existing order returned",
+          );
         }
         let subtotal = 0,
           tax = 0,
@@ -857,19 +1661,85 @@ export async function createApp(overrides?: {
           discount,
           total,
           idempotencyKey: `${keyPrefix}.${requestHash}`,
-          trackingVerificationHash: crypto.createHash("sha256").update(String(req.body.contact.email || req.body.contact.phone).trim().toLowerCase()).digest("hex"),
-          invoiceSnapshot: {contact:req.body.contact,shipping:{...req.body.shippingAddress,postalCode:req.body.postalCode},gstin:req.body.gstin},
+          trackingVerificationHash: crypto
+            .createHash("sha256")
+            .update(
+              String(req.body.contact.email || req.body.contact.phone)
+                .trim()
+                .toLowerCase(),
+            )
+            .digest("hex"),
+          invoiceSnapshot: {
+            contact: req.body.contact,
+            shipping: {
+              ...req.body.shippingAddress,
+              postalCode: req.body.postalCode,
+            },
+            gstin: req.body.gstin,
+          },
         });
         createdOrderId = order.id;
-        let payment:null|{externalId:string;clientToken?:string}=null,paymentFailure:{code:string;message:string;retryable:boolean;fallbackOptions:string[]}|undefined;
-        if(!isCod)try{payment=await resolvePaymentProvider(req.body.paymentProvider).createOrder({orderId:order.id,amount:{amount:total,currency:"INR"},idempotencyKey:`pay:${key}`})}catch(error){if(!(error instanceof AppError)||error.code!=="PAYMENT_PROVIDER_ERROR")throw error;const details=(error.details||{}) as Record<string,unknown>;paymentFailure={code:String(details.category||error.code),message:"The selected payment gateway is temporarily unavailable. Your order is saved; retry or choose Cash on Delivery.",retryable:Boolean(details.retryable),fallbackOptions:["cod"]};order.payment={externalId:`unavailable:${order.id}`,provider:req.body.paymentProvider,status:"FAILED",lastError:{code:paymentFailure.code,description:paymentFailure.message}}}
-        if(payment)order.payment={...payment,provider:req.body.paymentProvider,status:"CREATED"};else if(isCod)order.payment=null;
+        let payment: null | { externalId: string; clientToken?: string } = null,
+          paymentFailure:
+            | {
+                code: string;
+                message: string;
+                retryable: boolean;
+                fallbackOptions: string[];
+              }
+            | undefined;
+        if (!isCod)
+          try {
+            payment = await resolvePaymentProvider(
+              req.body.paymentProvider,
+            ).createOrder({
+              orderId: order.id,
+              amount: { amount: total, currency: "INR" },
+              idempotencyKey: `pay:${key}`,
+            });
+          } catch (error) {
+            if (
+              !(error instanceof AppError) ||
+              error.code !== "PAYMENT_PROVIDER_ERROR"
+            )
+              throw error;
+            const details = (error.details || {}) as Record<string, unknown>;
+            paymentFailure = {
+              code: String(details.category || error.code),
+              message:
+                "The selected payment gateway is temporarily unavailable. Your order is saved; retry or choose Cash on Delivery.",
+              retryable: Boolean(details.retryable),
+              fallbackOptions: ["cod"],
+            };
+            order.payment = {
+              externalId: `unavailable:${order.id}`,
+              provider: req.body.paymentProvider,
+              status: "FAILED",
+              lastError: {
+                code: paymentFailure.code,
+                description: paymentFailure.message,
+              },
+            };
+          }
+        if (payment)
+          order.payment = {
+            ...payment,
+            provider: req.body.paymentProvider,
+            status: "CREATED",
+          };
+        else if (isCod) order.payment = null;
         await persistence?.saveOrderAndReservations(
           order,
           {
             contact: req.body.contact,
-            shipping: { ...req.body.shippingAddress, postalCode: req.body.postalCode },
-            billing: req.body.billingAddress || { ...req.body.shippingAddress, postalCode: req.body.postalCode },
+            shipping: {
+              ...req.body.shippingAddress,
+              postalCode: req.body.postalCode,
+            },
+            billing: req.body.billingAddress || {
+              ...req.body.shippingAddress,
+              postalCode: req.body.postalCode,
+            },
             gstin: req.body.gstin,
             deliveryInstructions: req.body.deliveryInstructions,
           },
@@ -880,9 +1750,17 @@ export async function createApp(overrides?: {
         if (coupon) coupon.used++;
         return ok(
           res,
-          { order, payment, paymentFailure, fallbackOptions:paymentFailure?.fallbackOptions||[], shipping: rates[0] },
-          paymentFailure?"Order saved; payment requires another attempt":"Checkout created",
-          paymentFailure?202:201,
+          {
+            order,
+            payment,
+            paymentFailure,
+            fallbackOptions: paymentFailure?.fallbackOptions || [],
+            shipping: rates[0],
+          },
+          paymentFailure
+            ? "Order saved; payment requires another attempt"
+            : "Checkout created",
+          paymentFailure ? 202 : 201,
         );
       } catch (e) {
         if (reserved) store.releaseMany(req.body.lines);
@@ -891,25 +1769,147 @@ export async function createApp(overrides?: {
       }
     },
   );
-  app.post("/api/v1/payments/client-events",limiter(20,60000),validate(paymentClientEventSchema),async(req,res)=>{if(persistence)return ok(res,await persistence.recordPaymentClientEvent(req.body),"Payment attempt recorded");const order=[...store.orders.values()].find(item=>item.number===req.body.orderNumber&&item.payment?.externalId===req.body.providerOrderId);if(!order||!order.payment)throw new AppError(404,"PAYMENT_NOT_FOUND","Payment attempt was not found");order.payment.status=req.body.type;order.payment.gatewayTransactionId=req.body.gatewayPaymentId;order.payment.lastError={code:req.body.errorCode,description:req.body.errorDescription};store.auditLogs.unshift({id:crypto.randomUUID(),action:`payment.${req.body.type.toLowerCase()}`,resource:"payment",resourceId:order.payment.externalId,after:{gatewayTransactionId:req.body.gatewayPaymentId,errorCode:req.body.errorCode},createdAt:new Date().toISOString()});return ok(res,order.payment,"Payment attempt recorded")});
-  app.post("/api/v1/payments/retry",limiter(5,60000),validate(paymentRetrySchema),async(req,res)=>{const order=[...store.orders.values()].find(item=>item.number===req.body.orderNumber),supplied=crypto.createHash("sha256").update(req.body.contact.trim().toLowerCase()).digest("hex");if(!order||order.status!=="PAYMENT_PENDING"||!order.trackingVerificationHash||!crypto.timingSafeEqual(Buffer.from(supplied),Buffer.from(order.trackingVerificationHash)))throw new AppError(404,"ORDER_NOT_FOUND","Pending order was not found");const provider=resolvePaymentProvider(req.body.provider),attemptKey=`retry:${order.id}:${crypto.randomUUID()}`,payment=await provider.createOrder({orderId:order.id,amount:{amount:order.total,currency:"INR"},idempotencyKey:attemptKey}),attempt={...payment,provider:req.body.provider,status:"CREATED"};order.payment=attempt;await persistence?.createPaymentAttempt(order.id,req.body.provider,payment.externalId,order.total,attemptKey);return ok(res,{order:{number:order.number,status:order.status},payment:attempt},"New payment attempt created",201)});
-  app.get("/api/v1/orders/:number/track", limiter(30, 60_000), async (req, res) => {
-    const order = [...store.orders.values()].find(
-      (x) => x.number === String(req.params.number),
-    );
-    const verification = String(req.query.contact || "").trim().toLowerCase();
-    const suppliedHash = crypto.createHash("sha256").update(verification).digest("hex");
-    if (!order || !verification || !order.trackingVerificationHash || !crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(order.trackingVerificationHash)))
-      throw new AppError(404, "ORDER_NOT_FOUND", "Order not found or contact details do not match");
-    const shipment = persistence ? await persistence.trackingDetails(order.id) : null;
-    return ok(res, {
-      number: order.number,
-      status: order.status,
-      history: order.history,
-      shipment,
-      estimatedDelivery: shipment ? new Date(Date.now() + 3 * 86_400_000).toISOString() : null,
-    });
-  });
+  app.post(
+    "/api/v1/payments/client-events",
+    limiter(20, 60000),
+    validate(paymentClientEventSchema),
+    async (req, res) => {
+      if (persistence)
+        return ok(
+          res,
+          await persistence.recordPaymentClientEvent(req.body),
+          "Payment attempt recorded",
+        );
+      const order = [...store.orders.values()].find(
+        (item) =>
+          item.number === req.body.orderNumber &&
+          item.payment?.externalId === req.body.providerOrderId,
+      );
+      if (!order || !order.payment)
+        throw new AppError(
+          404,
+          "PAYMENT_NOT_FOUND",
+          "Payment attempt was not found",
+        );
+      order.payment.status = req.body.type;
+      order.payment.gatewayTransactionId = req.body.gatewayPaymentId;
+      order.payment.lastError = {
+        code: req.body.errorCode,
+        description: req.body.errorDescription,
+      };
+      store.auditLogs.unshift({
+        id: crypto.randomUUID(),
+        action: `payment.${req.body.type.toLowerCase()}`,
+        resource: "payment",
+        resourceId: order.payment.externalId,
+        after: {
+          gatewayTransactionId: req.body.gatewayPaymentId,
+          errorCode: req.body.errorCode,
+        },
+        createdAt: new Date().toISOString(),
+      });
+      return ok(res, order.payment, "Payment attempt recorded");
+    },
+  );
+  app.post(
+    "/api/v1/payments/retry",
+    limiter(5, 60000),
+    validate(paymentRetrySchema),
+    async (req, res) => {
+      const order = [...store.orders.values()].find(
+          (item) => item.number === req.body.orderNumber,
+        ),
+        supplied = crypto
+          .createHash("sha256")
+          .update(req.body.contact.trim().toLowerCase())
+          .digest("hex");
+      if (
+        !order ||
+        order.status !== "PAYMENT_PENDING" ||
+        !order.trackingVerificationHash ||
+        !crypto.timingSafeEqual(
+          Buffer.from(supplied),
+          Buffer.from(order.trackingVerificationHash),
+        )
+      )
+        throw new AppError(
+          404,
+          "ORDER_NOT_FOUND",
+          "Pending order was not found",
+        );
+      const provider = resolvePaymentProvider(req.body.provider),
+        attemptKey = `retry:${order.id}:${crypto.randomUUID()}`,
+        payment = await provider.createOrder({
+          orderId: order.id,
+          amount: { amount: order.total, currency: "INR" },
+          idempotencyKey: attemptKey,
+        }),
+        attempt = {
+          ...payment,
+          provider: req.body.provider,
+          status: "CREATED",
+        };
+      order.payment = attempt;
+      await persistence?.createPaymentAttempt(
+        order.id,
+        req.body.provider,
+        payment.externalId,
+        order.total,
+        attemptKey,
+      );
+      return ok(
+        res,
+        {
+          order: { number: order.number, status: order.status },
+          payment: attempt,
+        },
+        "New payment attempt created",
+        201,
+      );
+    },
+  );
+  app.get(
+    "/api/v1/orders/:number/track",
+    limiter(30, 60_000),
+    async (req, res) => {
+      const order = [...store.orders.values()].find(
+        (x) => x.number === String(req.params.number),
+      );
+      const verification = String(req.query.contact || "")
+        .trim()
+        .toLowerCase();
+      const suppliedHash = crypto
+        .createHash("sha256")
+        .update(verification)
+        .digest("hex");
+      if (
+        !order ||
+        !verification ||
+        !order.trackingVerificationHash ||
+        !crypto.timingSafeEqual(
+          Buffer.from(suppliedHash),
+          Buffer.from(order.trackingVerificationHash),
+        )
+      )
+        throw new AppError(
+          404,
+          "ORDER_NOT_FOUND",
+          "Order not found or contact details do not match",
+        );
+      const shipment = persistence
+        ? await persistence.trackingDetails(order.id)
+        : null;
+      return ok(res, {
+        number: order.number,
+        status: order.status,
+        history: order.history,
+        shipment,
+        estimatedDelivery: shipment
+          ? new Date(Date.now() + 3 * 86_400_000).toISOString()
+          : null,
+      });
+    },
+  );
   app.get("/api/v1/account/orders", auth, (req, res) =>
     ok(
       res,
@@ -918,7 +1918,94 @@ export async function createApp(overrides?: {
       ),
     ),
   );
-  app.get("/api/v1/orders/:id/invoice",auth,async(req,res)=>{const order=store.orders.get(String(req.params.id));if(!order||(order.userId!==req.principal!.sub&&!req.principal!.permissions.includes("orders:read")))throw new AppError(404,"ORDER_NOT_FOUND","Order not found");const storefront=await readStorefront(requestHostname(req)),pdf=await generateInvoicePdf({store:{name:storefront.storeName,legalName:storefront.legalName,gstin:storefront.businessGstin,address:storefront.businessAddress,email:storefront.supportEmail,phone:storefront.supportPhone},order:{number:order.number,createdAt:order.createdAt,status:order.status,subtotal:order.subtotal,tax:order.tax,shipping:order.shipping,discount:order.discount,total:order.total,paymentStatus:order.payment?.status||(order.payment?"PENDING":"CASH_ON_DELIVERY"),lines:order.lines,snapshot:order.invoiceSnapshot}});res.setHeader("content-type","application/pdf");res.setHeader("content-disposition",`attachment; filename="invoice-${order.number.replace(/[^A-Za-z0-9_-]/g,"")}.pdf"`);res.setHeader("cache-control","private, no-store");return res.status(200).send(pdf)});
+  app.get("/api/v1/account/payments", auth, async (req, res) => {
+    if (persistence)
+      return ok(
+        res,
+        await persistence.listCustomerPayments(req.principal!.sub),
+      );
+    const payments = [...store.orders.values()]
+      .filter(
+        (order) =>
+          order.userId === req.principal!.sub && Boolean(order.payment),
+      )
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((order) => {
+        const payment = order.payment!;
+        const refundedAmount = payment.status === "REFUNDED" ? order.total : 0;
+        return {
+          id: `payment:${order.id}`,
+          orderId: order.id,
+          orderNumber: order.number,
+          orderStatus: order.status,
+          provider: payment.provider || "Payment provider",
+          status: payment.status || "CREATED",
+          amount: order.total,
+          currency: "INR",
+          providerReference: payment.externalId,
+          transactionId: payment.gatewayTransactionId || null,
+          refundedAmount,
+          refunds: [],
+          events: payment.lastError
+            ? [
+                {
+                  id: `event:${order.id}`,
+                  type: payment.status || "FAILED",
+                  amount: 0,
+                  errorCode: payment.lastError.code,
+                  errorDescription: payment.lastError.description,
+                  createdAt: order.createdAt,
+                },
+              ]
+            : [],
+          createdAt: order.createdAt,
+          verifiedAt: null,
+        };
+      });
+    return ok(res, payments);
+  });
+  app.get("/api/v1/orders/:id/invoice", auth, async (req, res) => {
+    const order = store.orders.get(String(req.params.id));
+    if (
+      !order ||
+      (order.userId !== req.principal!.sub &&
+        !req.principal!.permissions.includes("orders:read"))
+    )
+      throw new AppError(404, "ORDER_NOT_FOUND", "Order not found");
+    const storefront = await readStorefront(requestHostname(req)),
+      pdf = await generateInvoicePdf({
+        store: {
+          name: storefront.storeName,
+          legalName: storefront.legalName,
+          gstin: storefront.businessGstin,
+          address: storefront.businessAddress,
+          email: storefront.supportEmail,
+          phone: storefront.supportPhone,
+        },
+        order: {
+          number: order.number,
+          createdAt: order.createdAt,
+          status: order.status,
+          subtotal: order.subtotal,
+          tax: order.tax,
+          shipping: order.shipping,
+          discount: order.discount,
+          total: order.total,
+          paymentStatus:
+            order.payment?.status ||
+            (order.payment ? "PENDING" : "CASH_ON_DELIVERY"),
+          lines: order.lines,
+          snapshot: order.invoiceSnapshot,
+        },
+      });
+    res.setHeader("content-type", "application/pdf");
+    res.setHeader(
+      "content-disposition",
+      `attachment; filename="invoice-${order.number.replace(/[^A-Za-z0-9_-]/g, "")}.pdf"`,
+    );
+    res.setHeader("cache-control", "private, no-store");
+    return res.status(200).send(pdf);
+  });
   app.post(
     "/api/v1/account/returns",
     auth,
@@ -967,53 +2054,326 @@ export async function createApp(overrides?: {
       ),
     ),
   );
-  app.post("/api/v1/account/support", auth, validate(supportTicketSchema), async (req, res) => {
-    if (persistence) return ok(res, await persistence.createSupportTicket(req.principal!.sub, req.body), "Support ticket created", 201);
-    const createdAt = new Date().toISOString(), ticket = { id: crypto.randomUUID(), number: `SUP-${Date.now().toString(36).toUpperCase()}`, userId: req.principal!.sub, subject: req.body.subject, priority: req.body.priority, status: "OPEN", createdAt, messages: [{ id: crypto.randomUUID(), authorId: req.principal!.sub, body: req.body.message, internal: false, createdAt }] };
-    store.supportTickets.set(ticket.id, ticket); return ok(res, ticket, "Support ticket created", 201);
-  });
-  app.get("/api/v1/account/support", auth, async (req, res) => ok(res, persistence ? await persistence.listSupportTickets(req.principal!.sub) : [...store.supportTickets.values()].filter(ticket => ticket.userId === req.principal!.sub)));
-  app.post("/api/v1/account/support/:id/replies", auth, validate(supportReplySchema), async (req, res) => {
-    if (persistence) return ok(res, await persistence.replySupportTicket(String(req.params.id), req.principal!.sub, req.body.message, req.body.status, req.principal!.sub), "Reply added", 201);
-    const ticket = store.supportTickets.get(String(req.params.id)); if (!ticket || ticket.userId !== req.principal!.sub) throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
-    ticket.messages.push({ id: crypto.randomUUID(), authorId: req.principal!.sub, body: req.body.message, internal: false, createdAt: new Date().toISOString() }); ticket.status = req.body.status || "OPEN"; return ok(res, ticket, "Reply added", 201);
-  });
+  app.post(
+    "/api/v1/account/support",
+    auth,
+    validate(supportTicketSchema),
+    async (req, res) => {
+      if (persistence)
+        return ok(
+          res,
+          await persistence.createSupportTicket(req.principal!.sub, req.body),
+          "Support ticket created",
+          201,
+        );
+      const createdAt = new Date().toISOString(),
+        ticket = {
+          id: crypto.randomUUID(),
+          number: `SUP-${Date.now().toString(36).toUpperCase()}`,
+          userId: req.principal!.sub,
+          subject: req.body.subject,
+          priority: req.body.priority,
+          status: "OPEN",
+          createdAt,
+          messages: [
+            {
+              id: crypto.randomUUID(),
+              authorId: req.principal!.sub,
+              body: req.body.message,
+              internal: false,
+              createdAt,
+            },
+          ],
+        };
+      store.supportTickets.set(ticket.id, ticket);
+      return ok(res, ticket, "Support ticket created", 201);
+    },
+  );
+  app.get("/api/v1/account/support", auth, async (req, res) =>
+    ok(
+      res,
+      persistence
+        ? await persistence.listSupportTickets(req.principal!.sub)
+        : [...store.supportTickets.values()].filter(
+            (ticket) => ticket.userId === req.principal!.sub,
+          ),
+    ),
+  );
+  app.post(
+    "/api/v1/account/support/:id/replies",
+    auth,
+    validate(supportReplySchema),
+    async (req, res) => {
+      if (persistence)
+        return ok(
+          res,
+          await persistence.replySupportTicket(
+            String(req.params.id),
+            req.principal!.sub,
+            req.body.message,
+            req.body.status,
+            req.principal!.sub,
+          ),
+          "Reply added",
+          201,
+        );
+      const ticket = store.supportTickets.get(String(req.params.id));
+      if (!ticket || ticket.userId !== req.principal!.sub)
+        throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
+      ticket.messages.push({
+        id: crypto.randomUUID(),
+        authorId: req.principal!.sub,
+        body: req.body.message,
+        internal: false,
+        createdAt: new Date().toISOString(),
+      });
+      ticket.status = req.body.status || "OPEN";
+      return ok(res, ticket, "Reply added", 201);
+    },
+  );
   app.get("/api/v1/admin/orders", auth, authorize("orders:read"), (_req, res) =>
     ok(res, [...store.orders.values()]),
   );
-  app.get("/api/v1/admin/payments",auth,authorize("payments:read"),async(_req,res)=>ok(res,persistence?await persistence.listPayments():[...store.orders.values()].filter(order=>order.payment).map(order=>({orderNumber:order.number,amount:order.total,currency:"INR",...order.payment}))));
-  app.post("/api/v1/admin/payments/reconcile",auth,authorize("payments:read"),validate(paymentReconcileSchema),async(req,res)=>{if(!persistence)throw new AppError(503,"DATABASE_REQUIRED","Payment reconciliation requires persistent payment records");const payments=await persistence.listPayments(),payment=payments.find(item=>item.id===req.body.paymentId);if(!payment?.externalId)throw new AppError(404,"PAYMENT_NOT_FOUND","Payment was not found");const gateway=await resolvePaymentProvider(payment.provider),status=await gateway.lookup(payment.externalId),result=await persistence.reconcilePayment(payment.id,status);const order=[...store.orders.values()].find(item=>item.number===result.orderNumber);if(order&&status.status==="CAPTURED"&&order.status==="PAYMENT_PENDING")store.transitionOrder(order.id,"PAID",req.principal!.sub,"RECONCILIATION");return ok(res,result,"Payment reconciled")});
-  app.get("/api/v1/admin/customers", auth, authorize("customers:read"), (_req, res) =>
-    ok(res, [...store.users.values()].filter(user => user.role === "CUSTOMER").map(user => ({ id: user.id, name: user.name, email: user.email, orders: [...store.orders.values()].filter(order => order.userId === user.id).length }))),
+  app.get(
+    "/api/v1/admin/payments",
+    auth,
+    authorize("payments:read"),
+    async (_req, res) =>
+      ok(
+        res,
+        persistence
+          ? await persistence.listPayments()
+          : [...store.orders.values()]
+              .filter((order) => order.payment)
+              .map((order) => ({
+                orderNumber: order.number,
+                amount: order.total,
+                currency: "INR",
+                ...order.payment,
+              })),
+      ),
   );
-  app.get("/api/v1/admin/inventory", auth, authorize("inventory:read"), (_req, res) =>
-    ok(res, store.listProducts().flatMap(product => product.variants.map(variant => ({ productId: product.id, product: product.name, variantId: variant.id, sku: variant.sku, title: variant.title, onHand: variant.stock, reserved: variant.reserved, available: variant.stock - variant.reserved, lowStock: variant.stock - variant.reserved <= 5 })))),
+  app.post(
+    "/api/v1/admin/payments/reconcile",
+    auth,
+    authorize("payments:read"),
+    validate(paymentReconcileSchema),
+    async (req, res) => {
+      if (!persistence)
+        throw new AppError(
+          503,
+          "DATABASE_REQUIRED",
+          "Payment reconciliation requires persistent payment records",
+        );
+      const payments = await persistence.listPayments(),
+        payment = payments.find((item) => item.id === req.body.paymentId);
+      if (!payment?.externalId)
+        throw new AppError(404, "PAYMENT_NOT_FOUND", "Payment was not found");
+      const gateway = await resolvePaymentProvider(payment.provider),
+        status = await gateway.lookup(payment.externalId),
+        result = await persistence.reconcilePayment(payment.id, status);
+      const order = [...store.orders.values()].find(
+        (item) => item.number === result.orderNumber,
+      );
+      if (
+        order &&
+        status.status === "CAPTURED" &&
+        order.status === "PAYMENT_PENDING"
+      )
+        store.transitionOrder(
+          order.id,
+          "PAID",
+          req.principal!.sub,
+          "RECONCILIATION",
+        );
+      return ok(res, result, "Payment reconciled");
+    },
   );
-  app.patch("/api/v1/admin/inventory/:variantId", auth, authorize("inventory:update"), validate(inventoryAdjustmentSchema), async (req, res) => {
-    const { variant } = store.getVariant(String(req.params.variantId));
-    if (variant.stock + req.body.quantity < variant.reserved) throw new AppError(409, "INVENTORY_ADJUSTMENT_INVALID", "Adjustment would reduce stock below reserved quantity");
-    await persistence?.adjustInventory(variant.id, req.body.quantity, req.body.reason, req.principal!.sub);
-    variant.stock += req.body.quantity;
-    return ok(res, { variantId: variant.id, onHand: variant.stock, reserved: variant.reserved, available: variant.stock - variant.reserved }, "Inventory adjusted");
-  });
-  app.get("/api/v1/admin/analytics", auth, authorize("analytics:read"), (_req, res) => {
-    const orders = [...store.orders.values()], completed = orders.filter(order => !["CANCELLED", "FAILED"].includes(order.status));
-    const revenue = completed.reduce((sum, order) => sum + order.total, 0);
-    return ok(res, { revenue, orders: orders.length, averageOrderValue: completed.length ? Math.round(revenue / completed.length * 100) / 100 : 0, customers: [...store.users.values()].filter(user => user.role === "CUSTOMER").length, failedOrders: orders.filter(order => order.status === "FAILED").length, refunds: orders.filter(order => order.status === "REFUNDED").length });
-  });
-  app.get("/api/v1/admin/returns", auth, authorize("orders:read"), (_req, res) =>
-    ok(res, [...store.returns.values()]),
+  app.get(
+    "/api/v1/admin/customers",
+    auth,
+    authorize("customers:read"),
+    (_req, res) =>
+      ok(
+        res,
+        [...store.users.values()]
+          .filter((user) => user.role === "CUSTOMER")
+          .map((user) => ({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            orders: [...store.orders.values()].filter(
+              (order) => order.userId === user.id,
+            ).length,
+          })),
+      ),
   );
-  app.get("/api/v1/admin/reviews", auth, authorize("reviews:read"), async (_req, res) => ok(res, persistence ? await persistence.listReviews() : [...store.reviews.values()]));
-  app.patch("/api/v1/admin/reviews/:id", auth, authorize("reviews:update"), validate(reviewModerationSchema), async (req, res) => {
-    if (persistence) return ok(res, await persistence.moderateReview(String(req.params.id), req.body.status, req.principal!.sub), "Review moderated");
-    const review = store.reviews.get(String(req.params.id)); if (!review) throw new AppError(404, "REVIEW_NOT_FOUND", "Review not found"); review.status = req.body.status; return ok(res, review, "Review moderated");
-  });
-  app.get("/api/v1/admin/support", auth, authorize("support:read"), async (_req, res) => ok(res, persistence ? await persistence.listSupportTickets() : [...store.supportTickets.values()]));
-  app.post("/api/v1/admin/support/:id/replies", auth, authorize("support:update"), validate(supportReplySchema), async (req, res) => {
-    if (persistence) return ok(res, await persistence.replySupportTicket(String(req.params.id), req.principal!.sub, req.body.message, req.body.status), "Reply added", 201);
-    const ticket = store.supportTickets.get(String(req.params.id)); if (!ticket) throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found"); ticket.messages.push({ id: crypto.randomUUID(), authorId: req.principal!.sub, body: req.body.message, internal: false, createdAt: new Date().toISOString() }); ticket.status = req.body.status || "WAITING_CUSTOMER"; return ok(res, ticket, "Reply added", 201);
-  });
+  app.get(
+    "/api/v1/admin/inventory",
+    auth,
+    authorize("inventory:read"),
+    (_req, res) =>
+      ok(
+        res,
+        store
+          .listProducts()
+          .flatMap((product) =>
+            product.variants.map((variant) => ({
+              productId: product.id,
+              product: product.name,
+              variantId: variant.id,
+              sku: variant.sku,
+              title: variant.title,
+              onHand: variant.stock,
+              reserved: variant.reserved,
+              available: variant.stock - variant.reserved,
+              lowStock: variant.stock - variant.reserved <= 5,
+            })),
+          ),
+      ),
+  );
+  app.patch(
+    "/api/v1/admin/inventory/:variantId",
+    auth,
+    authorize("inventory:update"),
+    validate(inventoryAdjustmentSchema),
+    async (req, res) => {
+      const { variant } = store.getVariant(String(req.params.variantId));
+      if (variant.stock + req.body.quantity < variant.reserved)
+        throw new AppError(
+          409,
+          "INVENTORY_ADJUSTMENT_INVALID",
+          "Adjustment would reduce stock below reserved quantity",
+        );
+      await persistence?.adjustInventory(
+        variant.id,
+        req.body.quantity,
+        req.body.reason,
+        req.principal!.sub,
+      );
+      variant.stock += req.body.quantity;
+      return ok(
+        res,
+        {
+          variantId: variant.id,
+          onHand: variant.stock,
+          reserved: variant.reserved,
+          available: variant.stock - variant.reserved,
+        },
+        "Inventory adjusted",
+      );
+    },
+  );
+  app.get(
+    "/api/v1/admin/analytics",
+    auth,
+    authorize("analytics:read"),
+    (_req, res) => {
+      const orders = [...store.orders.values()],
+        completed = orders.filter(
+          (order) => !["CANCELLED", "FAILED"].includes(order.status),
+        );
+      const revenue = completed.reduce((sum, order) => sum + order.total, 0);
+      return ok(res, {
+        revenue,
+        orders: orders.length,
+        averageOrderValue: completed.length
+          ? Math.round((revenue / completed.length) * 100) / 100
+          : 0,
+        customers: [...store.users.values()].filter(
+          (user) => user.role === "CUSTOMER",
+        ).length,
+        failedOrders: orders.filter((order) => order.status === "FAILED")
+          .length,
+        refunds: orders.filter((order) => order.status === "REFUNDED").length,
+      });
+    },
+  );
+  app.get(
+    "/api/v1/admin/returns",
+    auth,
+    authorize("orders:read"),
+    (_req, res) => ok(res, [...store.returns.values()]),
+  );
+  app.get(
+    "/api/v1/admin/reviews",
+    auth,
+    authorize("reviews:read"),
+    async (_req, res) =>
+      ok(
+        res,
+        persistence
+          ? await persistence.listReviews()
+          : [...store.reviews.values()],
+      ),
+  );
+  app.patch(
+    "/api/v1/admin/reviews/:id",
+    auth,
+    authorize("reviews:update"),
+    validate(reviewModerationSchema),
+    async (req, res) => {
+      if (persistence)
+        return ok(
+          res,
+          await persistence.moderateReview(
+            String(req.params.id),
+            req.body.status,
+            req.principal!.sub,
+          ),
+          "Review moderated",
+        );
+      const review = store.reviews.get(String(req.params.id));
+      if (!review)
+        throw new AppError(404, "REVIEW_NOT_FOUND", "Review not found");
+      review.status = req.body.status;
+      return ok(res, review, "Review moderated");
+    },
+  );
+  app.get(
+    "/api/v1/admin/support",
+    auth,
+    authorize("support:read"),
+    async (_req, res) =>
+      ok(
+        res,
+        persistence
+          ? await persistence.listSupportTickets()
+          : [...store.supportTickets.values()],
+      ),
+  );
+  app.post(
+    "/api/v1/admin/support/:id/replies",
+    auth,
+    authorize("support:update"),
+    validate(supportReplySchema),
+    async (req, res) => {
+      if (persistence)
+        return ok(
+          res,
+          await persistence.replySupportTicket(
+            String(req.params.id),
+            req.principal!.sub,
+            req.body.message,
+            req.body.status,
+          ),
+          "Reply added",
+          201,
+        );
+      const ticket = store.supportTickets.get(String(req.params.id));
+      if (!ticket)
+        throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
+      ticket.messages.push({
+        id: crypto.randomUUID(),
+        authorId: req.principal!.sub,
+        body: req.body.message,
+        internal: false,
+        createdAt: new Date().toISOString(),
+      });
+      ticket.status = req.body.status || "WAITING_CUSTOMER";
+      return ok(res, ticket, "Reply added", 201);
+    },
+  );
   app.patch(
     "/api/v1/admin/returns/:id",
     auth,
@@ -1021,8 +2381,14 @@ export async function createApp(overrides?: {
     validate(returnDecisionSchema),
     async (req, res) => {
       const item = store.returns.get(String(req.params.id));
-      if (!item) throw new AppError(404, "RETURN_NOT_FOUND", "Return request not found");
-      if (item.status !== "REQUESTED") throw new AppError(409, "RETURN_ALREADY_DECIDED", "Return request is no longer pending");
+      if (!item)
+        throw new AppError(404, "RETURN_NOT_FOUND", "Return request not found");
+      if (item.status !== "REQUESTED")
+        throw new AppError(
+          409,
+          "RETURN_ALREADY_DECIDED",
+          "Return request is no longer pending",
+        );
       await persistence?.decideReturn(item.id, req.body.status, req.body.notes);
       item.status = req.body.status;
       return ok(res, item, `Return ${req.body.status.toLowerCase()}`);
@@ -1036,16 +2402,49 @@ export async function createApp(overrides?: {
     async (req, res) => {
       const order = store.orders.get(String(req.params.id));
       if (!order) throw new AppError(404, "ORDER_NOT_FOUND", "Order not found");
-      if (req.body.amount > order.total) throw new AppError(422, "REFUND_AMOUNT_INVALID", "Refund cannot exceed the order total");
+      if (req.body.amount > order.total)
+        throw new AppError(
+          422,
+          "REFUND_AMOUNT_INVALID",
+          "Refund cannot exceed the order total",
+        );
       const key = String(req.headers["idempotency-key"] || "");
-      if (key.length < 8 || key.length > 100) throw new AppError(400, "IDEMPOTENCY_KEY_REQUIRED", "A valid Idempotency-Key header is required");
+      if (key.length < 8 || key.length > 100)
+        throw new AppError(
+          400,
+          "IDEMPOTENCY_KEY_REQUIRED",
+          "A valid Idempotency-Key header is required",
+        );
       const operationKey = `refund:${order.id}:${key}`;
-      const reservation = persistence ? await persistence.beginRefund(order.id, req.body.amount, operationKey) : { duplicate: false, refund: { id: operationKey, status: "PENDING", externalId: null }, provider: "development", externalId: order.id };
-      if (reservation.duplicate) return ok(res, reservation.refund, "Existing refund returned");
+      const reservation = persistence
+        ? await persistence.beginRefund(order.id, req.body.amount, operationKey)
+        : {
+            duplicate: false,
+            refund: { id: operationKey, status: "PENDING", externalId: null },
+            provider: "development",
+            externalId: order.id,
+          };
+      if (reservation.duplicate)
+        return ok(res, reservation.refund, "Existing refund returned");
       try {
-        const result = await resolvePaymentProvider(reservation.provider!).refund({ paymentId: reservation.externalId!, amount: { amount: req.body.amount, currency: "INR" }, idempotencyKey: operationKey });
-        await persistence?.completeRefund(reservation.refund.id, result.refundId, req.principal!.sub);
-        return ok(res, { ...result, amount: req.body.amount, status: "SUCCEEDED" }, "Refund processed", 201);
+        const result = await resolvePaymentProvider(
+          reservation.provider!,
+        ).refund({
+          paymentId: reservation.externalId!,
+          amount: { amount: req.body.amount, currency: "INR" },
+          idempotencyKey: operationKey,
+        });
+        await persistence?.completeRefund(
+          reservation.refund.id,
+          result.refundId,
+          req.principal!.sub,
+        );
+        return ok(
+          res,
+          { ...result, amount: req.body.amount, status: "SUCCEEDED" },
+          "Refund processed",
+          201,
+        );
       } catch (error) {
         await persistence?.failRefund(reservation.refund.id);
         throw error;
@@ -1091,7 +2490,9 @@ export async function createApp(overrides?: {
             "Only packed orders can be shipped",
           );
         const selectedShipping = resolveShippingProvider();
-        const shipmentContext = persistence ? await persistence.shipmentContext(order.id) : {};
+        const shipmentContext = persistence
+          ? await persistence.shipmentContext(order.id)
+          : {};
         const result = await selectedShipping.provider.createShipment({
           orderId: order.id,
           service: String(req.body?.service || "STANDARD"),

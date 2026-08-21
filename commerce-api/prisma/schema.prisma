@@ -173,44 +173,44 @@ model Brand {
 }
 
 model Product {
-  id            String           @id @default(uuid()) @db.Uuid
-  name          String
-  slug          String           @unique
-  description   String
-  status        String           @default("DRAFT")
-  categoryId    String           @db.Uuid
-  brandId       String?          @db.Uuid
-  hsnCode       String?
-  taxRate       Decimal          @default(18) @db.Decimal(5, 2)
-  specifications Json            @default("{}")
+  id             String           @id @default(uuid()) @db.Uuid
+  name           String
+  slug           String           @unique
+  description    String
+  status         String           @default("DRAFT")
+  categoryId     String           @db.Uuid
+  brandId        String?          @db.Uuid
+  hsnCode        String?
+  taxRate        Decimal          @default(18) @db.Decimal(5, 2)
+  specifications Json             @default("{}")
   seoTitle       String?
   seoDescription String?
-  metadata      Json?
-  deletedAt     DateTime?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  category      Category         @relation(fields: [categoryId], references: [id])
-  brand         Brand?           @relation(fields: [brandId], references: [id])
-  variants      ProductVariant[]
-  media         ProductMedia[]
-  reviews       Review[]
-  wishlistItems WishlistItem[]
+  metadata       Json?
+  deletedAt      DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  category       Category         @relation(fields: [categoryId], references: [id])
+  brand          Brand?           @relation(fields: [brandId], references: [id])
+  variants       ProductVariant[]
+  media          ProductMedia[]
+  reviews        Review[]
+  wishlistItems  WishlistItem[]
 
   @@index([categoryId, status])
   @@index([name])
 }
 
 model ProductVariant {
-  id          String      @id @default(uuid()) @db.Uuid
-  productId   String      @db.Uuid
-  sku         String      @unique
+  id          String         @id @default(uuid()) @db.Uuid
+  productId   String         @db.Uuid
+  sku         String         @unique
   title       String
-  price       Decimal     @db.Decimal(12, 2)
-  mrp         Decimal     @db.Decimal(12, 2)
+  price       Decimal        @db.Decimal(12, 2)
+  mrp         Decimal        @db.Decimal(12, 2)
   weightGrams Int
   attributes  Json
-  active      Boolean     @default(true)
-  product     Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  active      Boolean        @default(true)
+  product     Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
   inventory   Inventory?
   orderItems  OrderItem[]
   cartItems   CartItem[]
@@ -380,19 +380,20 @@ model OrderHistory {
 }
 
 model Payment {
-  id             String               @id @default(uuid()) @db.Uuid
-  orderId        String               @db.Uuid
-  provider       String
-  externalId     String?
-  status         PaymentStatus        @default(CREATED)
-  amount         Decimal              @db.Decimal(12, 2)
-  currency       String
-  idempotencyKey String               @unique
-  verifiedAt     DateTime?
-  createdAt      DateTime             @default(now())
-  order          Order                @relation(fields: [orderId], references: [id])
-  transactions   PaymentTransaction[]
-  refunds        Refund[]
+  id                   String               @id @default(uuid()) @db.Uuid
+  orderId              String               @db.Uuid
+  provider             String
+  externalId           String?
+  gatewayTransactionId String?
+  status               PaymentStatus        @default(CREATED)
+  amount               Decimal              @db.Decimal(12, 2)
+  currency             String
+  idempotencyKey       String               @unique
+  verifiedAt           DateTime?
+  createdAt            DateTime             @default(now())
+  order                Order                @relation(fields: [orderId], references: [id])
+  transactions         PaymentTransaction[]
+  refunds              Refund[]
 }
 
 model PaymentTransaction {

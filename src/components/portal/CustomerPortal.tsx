@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import {
+  AlertCircle,
+  CheckCircle2,
+  CreditCard,
   Gift,
   Heart,
   LayoutDashboard,
@@ -8,11 +11,16 @@ import {
   Package,
   RotateCcw,
   Settings,
+  ShieldCheck,
   Star,
   Wallet,
 } from "lucide-react";
 import { PortalShell } from "./PortalShell";
-import { commerceApi, commerceDownload } from "@/lib/commerce-api";
+import {
+  commerceApi,
+  commerceDownload,
+  type ApiProduct,
+} from "@/lib/commerce-api";
 import { money } from "@/data/commerce";
 import { toast, Toaster } from "sonner";
 
@@ -28,8 +36,71 @@ const nav: [string, React.ReactNode][] = [
   ["Profile settings", <Settings />],
 ];
 type RecordRow = Record<string, any>;
+type AccountUser = { id: string; name: string; email: string; role: string };
+type CustomerPayment = {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  orderStatus: string;
+  provider: string;
+  status: string;
+  amount: number;
+  currency: string;
+  providerReference?: string | null;
+  transactionId?: string | null;
+  refundedAmount: number;
+  refunds: Array<{
+    id: string;
+    reference?: string | null;
+    amount: number;
+    status: string;
+    createdAt: string;
+  }>;
+  events: Array<{
+    id: string;
+    type: string;
+    errorCode?: string;
+    errorDescription?: string;
+    createdAt: string;
+  }>;
+  createdAt: string;
+  verifiedAt?: string | null;
+};
+type CustomerReview = {
+  id: string;
+  productId: string;
+  rating: number;
+  title?: string | null;
+  body: string;
+  verified: boolean;
+  status: string;
+  createdAt: string;
+  product: { id: string; name: string; slug?: string };
+};
 
-function Records({ endpoint, empty, invoices=false }: { endpoint: string; empty: string; invoices?:boolean }) {
+const accountTabs = new Set(nav.map(([label]) => label));
+const date = (value: string) =>
+  new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(value));
+const paymentMoney = (value: number, currency: string) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: currency || "INR",
+    maximumFractionDigits: 2,
+  }).format(value);
+
+function Records({
+  endpoint,
+  empty,
+  invoices = false,
+}: {
+  endpoint: string;
+  empty: string;
+  invoices?: boolean;
+}) {
   const [rows, setRows] = useState<RecordRow[]>([]),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true);
@@ -43,7 +114,23 @@ function Records({ endpoint, empty, invoices=false }: { endpoint: string; empty:
       )
       .finally(() => setLoading(false));
   }, [endpoint]);
-  const download=async(row:RecordRow)=>{try{const blob=await commerceDownload(`/api/v1/orders/${row.id}/invoice`),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`invoice-${row.number||row.id}.pdf`;link.click();URL.revokeObjectURL(url)}catch(reason){toast.error(reason instanceof Error?reason.message:"Invoice could not be downloaded")}};
+  const download = async (row: RecordRow) => {
+    try {
+      const blob = await commerceDownload(`/api/v1/orders/${row.id}/invoice`),
+        url = URL.createObjectURL(blob),
+        link = document.createElement("a");
+      link.href = url;
+      link.download = `invoice-${row.number || row.id}.pdf`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      toast.error(
+        reason instanceof Error
+          ? reason.message
+          : "Invoice could not be downloaded",
+      );
+    }
+  };
   return (
     <section className="panel orders">
       <div className="panel-head">
@@ -74,7 +161,7 @@ function Records({ endpoint, empty, invoices=false }: { endpoint: string; empty:
                   .map((key) => (
                     <th key={key}>{key}</th>
                   ))}
-                {invoices&&<th>Invoice</th>}
+                {invoices && <th>Invoice</th>}
               </tr>
             </thead>
             <tbody>
@@ -89,7 +176,16 @@ function Records({ endpoint, empty, invoices=false }: { endpoint: string; empty:
                           : String(value ?? "—")}
                       </td>
                     ))}
-                  {invoices&&<td><button className="invoice-download" onClick={()=>download(row)}>Download PDF</button></td>}
+                  {invoices && (
+                    <td>
+                      <button
+                        className="invoice-download"
+                        onClick={() => download(row)}
+                      >
+                        Download PDF
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -102,6 +198,370 @@ function Records({ endpoint, empty, invoices=false }: { endpoint: string; empty:
         </div>
       )}
     </section>
+  );
+}
+
+function PaymentsPanel() {
+  const [payments, setPayments] = useState<CustomerPayment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    commerceApi<CustomerPayment[]>("/api/v1/account/payments")
+      .then(setPayments)
+      .catch((reason) =>
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Payment history could not be loaded",
+        ),
+      )
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading)
+    return (
+      <section className="panel module-empty">
+        <CreditCard />
+        <h3>Loading payment history…</h3>
+      </section>
+    );
+  if (error)
+    return (
+      <section className="panel module-empty">
+        <AlertCircle />
+        <h3>Payment history is unavailable</h3>
+        <p>{error}</p>
+        <a className="primary" href="/login">
+          Sign in again
+        </a>
+      </section>
+    );
+  if (!payments.length)
+    return (
+      <section className="panel module-empty">
+        <Wallet />
+        <h3>No online payments yet</h3>
+        <p>Cash-on-delivery orders remain available under My orders.</p>
+      </section>
+    );
+
+  const paid = payments
+    .filter((payment) =>
+      ["CAPTURED", "AUTHORIZED", "REFUNDED", "PARTIALLY_REFUNDED"].includes(
+        payment.status,
+      ),
+    )
+    .reduce((sum, payment) => sum + payment.amount, 0);
+  const refunded = payments.reduce(
+    (sum, payment) => sum + payment.refundedAmount,
+    0,
+  );
+  return (
+    <>
+      <div className="customer-stats payment-summary">
+        <article className="panel">
+          <CreditCard />
+          <div>
+            <b>{payments.length}</b>
+            <span>Online attempts</span>
+          </div>
+        </article>
+        <article className="panel">
+          <CheckCircle2 />
+          <div>
+            <b>{paymentMoney(paid, payments[0]?.currency || "INR")}</b>
+            <span>Collected</span>
+          </div>
+        </article>
+        <article className="panel">
+          <RotateCcw />
+          <div>
+            <b>{paymentMoney(refunded, payments[0]?.currency || "INR")}</b>
+            <span>Refunded</span>
+          </div>
+        </article>
+      </div>
+      <section className="panel orders payment-history">
+        <div className="panel-head">
+          <div>
+            <h2>Payment history</h2>
+            <p>Provider references, transaction IDs and refund status</p>
+          </div>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Order</th>
+                <th>Date</th>
+                <th>Provider</th>
+                <th>Gateway reference</th>
+                <th>Transaction ID</th>
+                <th>Amount</th>
+                <th>Refunded</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {payments.map((payment) => {
+                const failure = payment.events.find(
+                  (event) => event.errorDescription,
+                );
+                return (
+                  <tr key={payment.id}>
+                    <td>
+                      <a href="/account?tab=My%20orders">
+                        {payment.orderNumber}
+                      </a>
+                    </td>
+                    <td>{date(payment.createdAt)}</td>
+                    <td className="payment-provider">{payment.provider}</td>
+                    <td>
+                      <code>{payment.providerReference || "Pending"}</code>
+                    </td>
+                    <td>
+                      <code>{payment.transactionId || "Not issued"}</code>
+                    </td>
+                    <td>{paymentMoney(payment.amount, payment.currency)}</td>
+                    <td>
+                      {payment.refundedAmount
+                        ? paymentMoney(payment.refundedAmount, payment.currency)
+                        : "—"}
+                    </td>
+                    <td>
+                      <span
+                        className={`status ${payment.status.toLowerCase()}`}
+                        title={failure?.errorDescription}
+                      >
+                        {payment.status.replaceAll("_", " ")}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function ReviewsPanel() {
+  const [products, setProducts] = useState<ApiProduct[]>([]);
+  const [reviews, setReviews] = useState<CustomerReview[]>([]);
+  const [productId, setProductId] = useState("");
+  const [rating, setRating] = useState(5);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = async () => {
+    const [availableProducts, customerReviews] = await Promise.all([
+      commerceApi<ApiProduct[]>("/api/v1/products"),
+      commerceApi<CustomerReview[]>("/api/v1/account/reviews"),
+    ]);
+    setProducts(availableProducts);
+    setReviews(customerReviews);
+    const reviewed = new Set(customerReviews.map((review) => review.productId));
+    setProductId((current) =>
+      current && !reviewed.has(current)
+        ? current
+        : availableProducts.find((product) => !reviewed.has(product.id))?.id ||
+          "",
+    );
+  };
+
+  useEffect(() => {
+    load()
+      .catch((reason) =>
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Reviews could not be loaded",
+        ),
+      )
+      .finally(() => setLoading(false));
+  }, []);
+
+  const reviewedProducts = new Set(reviews.map((review) => review.productId));
+  const reviewableProducts = products.filter(
+    (product) => !reviewedProducts.has(product.id),
+  );
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await commerceApi("/api/v1/account/reviews", {
+        method: "POST",
+        body: JSON.stringify({
+          productId,
+          rating,
+          title: title || undefined,
+          body,
+        }),
+      });
+      toast.success("Review submitted for moderation");
+      setTitle("");
+      setBody("");
+      setRating(5);
+      await load();
+    } catch (reason) {
+      toast.error(
+        reason instanceof Error
+          ? reason.message
+          : "Review could not be submitted",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loading)
+    return (
+      <section className="panel module-empty">
+        <Star />
+        <h3>Loading your reviews…</h3>
+      </section>
+    );
+  if (error)
+    return (
+      <section className="panel module-empty">
+        <AlertCircle />
+        <h3>Reviews are unavailable</h3>
+        <p>{error}</p>
+      </section>
+    );
+
+  return (
+    <div className="reviews-layout">
+      <section className="panel form-panel review-form">
+        <div className="panel-head">
+          <div>
+            <h2>Write a product review</h2>
+            <p>Each review is checked before it appears publicly</p>
+          </div>
+        </div>
+        {reviewableProducts.length ? (
+          <form onSubmit={submit}>
+            <label>
+              Product
+              <select
+                value={productId}
+                onChange={(event) => setProductId(event.target.value)}
+                required
+              >
+                {reviewableProducts.map((product) => (
+                  <option key={product.id} value={product.id}>
+                    {product.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <fieldset className="review-rating">
+              <legend>Your rating</legend>
+              <div role="radiogroup" aria-label="Product rating">
+                {[1, 2, 3, 4, 5].map((value) => (
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={rating === value}
+                    aria-label={`${value} star${value === 1 ? "" : "s"}`}
+                    className={value <= rating ? "active" : ""}
+                    onClick={() => setRating(value)}
+                    key={value}
+                  >
+                    <Star />
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <label>
+              Review title <small>(optional)</small>
+              <input
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                maxLength={120}
+                placeholder="What stood out?"
+              />
+            </label>
+            <label>
+              Your review
+              <textarea
+                value={body}
+                onChange={(event) => setBody(event.target.value)}
+                minLength={5}
+                maxLength={5000}
+                required
+                placeholder="Share details that will help another customer."
+              />
+            </label>
+            <button className="primary" disabled={busy || !productId}>
+              {busy ? "Submitting…" : "Submit review"}
+            </button>
+          </form>
+        ) : (
+          <div className="review-complete">
+            <CheckCircle2 />
+            <h3>You have reviewed every available product</h3>
+            <p>Your published and pending reviews remain visible alongside.</p>
+          </div>
+        )}
+      </section>
+      <section className="panel customer-reviews">
+        <div className="panel-head">
+          <div>
+            <h2>Your reviews</h2>
+            <p>Track moderation and verified-purchase status</p>
+          </div>
+        </div>
+        {reviews.length ? (
+          <div className="review-list">
+            {reviews.map((review) => (
+              <article key={review.id}>
+                <div>
+                  <a href={`/product/${review.productId}`}>
+                    {review.product.name}
+                  </a>
+                  <span
+                    className="review-stars"
+                    aria-label={`${review.rating} stars`}
+                  >
+                    {[1, 2, 3, 4, 5].map((value) => (
+                      <Star
+                        className={value <= review.rating ? "active" : ""}
+                        key={value}
+                      />
+                    ))}
+                  </span>
+                </div>
+                <span className={`status ${review.status.toLowerCase()}`}>
+                  {review.status}
+                </span>
+                {review.title && <h3>{review.title}</h3>}
+                <p>{review.body}</p>
+                <footer>
+                  <span>{date(review.createdAt)}</span>
+                  {review.verified && (
+                    <span className="verified-review">
+                      <ShieldCheck /> Verified purchase
+                    </span>
+                  )}
+                </footer>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="module-empty compact">
+            <Star />
+            <h3>No reviews submitted yet</h3>
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -352,22 +812,46 @@ function Overview() {
 
 export function CustomerPortal() {
   const [active, setActive] = useState("My overview");
-  useEffect(
-    () =>
+  const [account, setAccount] = useState<AccountUser | null>(null);
+  useEffect(() => {
+    const syncTab = () => {
+      const requested = new URLSearchParams(window.location.search).get("tab");
       setActive(
-        new URLSearchParams(window.location.search).get("tab") || "My overview",
-      ),
-    [],
-  );
+        requested && accountTabs.has(requested) ? requested : "My overview",
+      );
+    };
+    syncTab();
+    window.addEventListener("popstate", syncTab);
+    return () => window.removeEventListener("popstate", syncTab);
+  }, []);
+  useEffect(() => {
+    commerceApi<AccountUser>("/api/v1/auth/me")
+      .then((user) => {
+        if (user.role !== "CUSTOMER") {
+          window.location.href = "/admin";
+          return;
+        }
+        setAccount(user);
+      })
+      .catch(() => undefined);
+  }, []);
   const content =
     active === "My overview" ? (
       <Overview />
     ) : active === "My orders" ? (
-      <Records endpoint="/api/v1/account/orders" empty="No orders yet" invoices />
+      <Records
+        endpoint="/api/v1/account/orders"
+        empty="No orders yet"
+        invoices
+      />
     ) : active === "Wishlist" ? (
       <Records endpoint="/api/v1/wishlist" empty="Your wishlist is empty" />
     ) : active === "Addresses" ? (
       <Addresses />
+    ) : active === "Payments" ? (
+      <PaymentsPanel />
+    ) : active === "Reviews" ? (
+      <ReviewsPanel />
     ) : active === "Returns" ? (
       <Records endpoint="/api/v1/account/returns" empty="No return requests" />
     ) : active === "Support" ? (
@@ -391,6 +875,9 @@ export function CustomerPortal() {
         nav={nav}
         active={active}
         onNavigate={setActive}
+        portalPath="/account"
+        userName={account?.name || "Customer"}
+        userRole={account?.email || "Customer account"}
       >
         {content}
       </PortalShell>

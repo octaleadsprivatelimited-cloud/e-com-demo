@@ -1,5 +1,8 @@
 import crypto from "node:crypto";
-import path from "node:path";import os from "node:os";import {mkdtemp,rm} from "node:fs/promises";import sharp from "sharp";
+import path from "node:path";
+import os from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
+import sharp from "sharp";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
@@ -18,7 +21,7 @@ const config: AppConfig = {
   UPLOAD_DIR: "",
   PUBLIC_UPLOAD_BASE_URL: "http://localhost:4001/uploads",
 };
-let uploadDirectory="";
+let uploadDirectory = "";
 let server: Server,
   base: string,
   store: CommerceStore,
@@ -36,9 +39,22 @@ async function request(path: string, init: RequestInit = {}) {
   };
 }
 beforeAll(async () => {
-  uploadDirectory=await mkdtemp(path.join(os.tmpdir(),"commerce-upload-"));config.UPLOAD_DIR=uploadDirectory;
+  uploadDirectory = await mkdtemp(path.join(os.tmpdir(), "commerce-upload-"));
+  config.UPLOAD_DIR = uploadDirectory;
   store = new CommerceStore();
-  const created = await createApp({ config, store, googleVerifier: async () => ({sub:"google-customer-1",email:"google.customer@example.com",email_verified:true,name:"Google Customer",aud:config.GOOGLE_CLIENT_ID,iss:"https://accounts.google.com",exp:Math.floor(Date.now()/1000)+3600}) });
+  const created = await createApp({
+    config,
+    store,
+    googleVerifier: async () => ({
+      sub: "google-customer-1",
+      email: "google.customer@example.com",
+      email_verified: true,
+      name: "Google Customer",
+      aud: config.GOOGLE_CLIENT_ID,
+      iss: "https://accounts.google.com",
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    }),
+  });
   server = created.app.listen(0);
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address();
@@ -53,7 +69,12 @@ beforeAll(async () => {
   });
   adminToken = login.body.data.accessToken;
 });
-afterAll(async()=>{await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));await rm(uploadDirectory,{recursive:true,force:true})});
+afterAll(async () => {
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  await rm(uploadDirectory, { recursive: true, force: true });
+});
 describe("commerce API", () => {
   it("reports health without leaking internals", async () => {
     const r = await request("/health");
@@ -64,15 +85,31 @@ describe("commerce API", () => {
     });
   });
   it("supports secure customer mobile OTP and verified Google sign-in", async () => {
-    const requested=await request("/api/v1/auth/mobile/request",{method:"POST",body:JSON.stringify({mobile:"+919876543210"})});
+    const requested = await request("/api/v1/auth/mobile/request", {
+      method: "POST",
+      body: JSON.stringify({ mobile: "+919876543210" }),
+    });
     expect(requested.status).toBe(200);
     expect(requested.body.data.developmentCode).toMatch(/^\d{6}$/);
-    const wrong=await request("/api/v1/auth/mobile/verify",{method:"POST",body:JSON.stringify({mobile:"+919876543210",code:"000000"})});
+    const wrong = await request("/api/v1/auth/mobile/verify", {
+      method: "POST",
+      body: JSON.stringify({ mobile: "+919876543210", code: "000000" }),
+    });
     expect(wrong.status).toBe(401);
-    const verified=await request("/api/v1/auth/mobile/verify",{method:"POST",body:JSON.stringify({mobile:"+919876543210",code:requested.body.data.developmentCode,name:"Mobile Customer"})});
+    const verified = await request("/api/v1/auth/mobile/verify", {
+      method: "POST",
+      body: JSON.stringify({
+        mobile: "+919876543210",
+        code: requested.body.data.developmentCode,
+        name: "Mobile Customer",
+      }),
+    });
     expect(verified.status).toBe(200);
     expect(verified.body.data.user.mobile).toBe("+919876543210");
-    const google=await request("/api/v1/auth/google",{method:"POST",body:JSON.stringify({credential:"x".repeat(120)})});
+    const google = await request("/api/v1/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ credential: "x".repeat(120) }),
+    });
     expect(google.status).toBe(200);
     expect(google.body.data.user.email).toBe("google.customer@example.com");
   });
@@ -81,12 +118,24 @@ describe("commerce API", () => {
     expect(initial.body.data.storeName).toBe("Aster & Row");
     const unauthorized = await request("/api/v1/admin/storefront-config");
     expect(unauthorized.status).toBe(401);
-    const updated = { ...initial.body.data, storeName: "Customer Store", primaryDomain: "shop.customer.test" };
-    const saved = await request("/api/v1/admin/storefront-config", { method: "PUT", headers: { authorization: `Bearer ${adminToken}` }, body: JSON.stringify(updated) });
+    const updated = {
+      ...initial.body.data,
+      storeName: "Customer Store",
+      primaryDomain: "shop.customer.test",
+    };
+    const saved = await request("/api/v1/admin/storefront-config", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify(updated),
+    });
     expect(saved.status).toBe(200);
     const branded = await request("/api/v1/storefront/config");
     expect(branded.body.data.storeName).toBe("Customer Store");
-    expect(store.auditLogs.some(log => log.action === "storefront.settings.updated")).toBe(true);
+    expect(
+      store.auditLogs.some(
+        (log) => log.action === "storefront.settings.updated",
+      ),
+    ).toBe(true);
   });
   it("publishes targeted campaigns and recommends products from browsing intent", async () => {
     const initial = await request("/api/v1/storefront/promotions");
@@ -94,7 +143,15 @@ describe("commerce API", () => {
     expect(initial.body.data.banners[0].buttonUrl).toBe("/shop");
     const unauthorized = await request("/api/v1/admin/promotions");
     expect(unauthorized.status).toBe(401);
-    const recommendation = await request("/api/v1/storefront/recommendations", { method: "POST", body: JSON.stringify({ categories: ["Home"], viewedProductIds: [], cartProductIds: [], limit: 3 }) });
+    const recommendation = await request("/api/v1/storefront/recommendations", {
+      method: "POST",
+      body: JSON.stringify({
+        categories: ["Home"],
+        viewedProductIds: [],
+        cartProductIds: [],
+        limit: 3,
+      }),
+    });
     expect(recommendation.status).toBe(200);
     expect(recommendation.body.data).toHaveLength(3);
     expect(recommendation.body.data[0].reason).toContain("Home");
@@ -202,7 +259,49 @@ describe("commerce API", () => {
     );
     expect(archived.body.data.status).toBe("ARCHIVED");
   });
-  it("converts uploaded product images to optimized WebP and rejects invalid files",async()=>{const product=store.listProducts()[0]!,image=await sharp({create:{width:120,height:80,channels:3,background:"#b96849"}}).png().toBuffer(),form=new FormData();form.append("image",new Blob([image],{type:"image/png"}),"product.png");form.append("alt","Product view");const response=await fetch(`${base}/api/v1/admin/products/${product.id}/media/upload`,{method:"POST",headers:{authorization:`Bearer ${adminToken}`},body:form}),body=await response.json() as any;expect(response.status).toBe(201);expect(body.data.media.url).toMatch(/\.webp$/);expect(body.data.format).toBe("webp");expect(body.data.bytes).toBeLessThan(image.length);const bad=new FormData();bad.append("image",new Blob(["not-an-image"],{type:"text/plain"}),"bad.txt");const rejected=await fetch(`${base}/api/v1/admin/products/${product.id}/media/upload`,{method:"POST",headers:{authorization:`Bearer ${adminToken}`},body:bad});expect(rejected.status).toBe(415)});
+  it("converts uploaded product images to optimized WebP and rejects invalid files", async () => {
+    const product = store.listProducts()[0]!,
+      image = await sharp({
+        create: { width: 120, height: 80, channels: 3, background: "#b96849" },
+      })
+        .png()
+        .toBuffer(),
+      form = new FormData();
+    form.append(
+      "image",
+      new Blob([image], { type: "image/png" }),
+      "product.png",
+    );
+    form.append("alt", "Product view");
+    const response = await fetch(
+        `${base}/api/v1/admin/products/${product.id}/media/upload`,
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${adminToken}` },
+          body: form,
+        },
+      ),
+      body = (await response.json()) as any;
+    expect(response.status).toBe(201);
+    expect(body.data.media.url).toMatch(/\.webp$/);
+    expect(body.data.format).toBe("webp");
+    expect(body.data.bytes).toBeLessThan(image.length);
+    const bad = new FormData();
+    bad.append(
+      "image",
+      new Blob(["not-an-image"], { type: "text/plain" }),
+      "bad.txt",
+    );
+    const rejected = await fetch(
+      `${base}/api/v1/admin/products/${product.id}/media/upload`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: bad,
+      },
+    );
+    expect(rejected.status).toBe(415);
+  });
   it("persists guest carts and authenticated wishlists", async () => {
     const product = store.listProducts()[0]!,
       variant = product.variants[0]!;
@@ -230,20 +329,77 @@ describe("commerce API", () => {
     expect(wishlist.body.data[0].id).toBe(product.id);
   });
   it("supports customer addresses, moderated reviews, and support tickets", async () => {
-    const address = await request("/api/v1/account/addresses", { method: "POST", headers: { authorization: `Bearer ${customerToken}` }, body: JSON.stringify({ label: "Home", line1: "1 Test Road", city: "Hyderabad", state: "Telangana", postalCode: "500081", country: "IN", isDefault: true }) });
+    const address = await request("/api/v1/account/addresses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({
+        label: "Home",
+        line1: "1 Test Road",
+        city: "Hyderabad",
+        state: "Telangana",
+        postalCode: "500081",
+        country: "IN",
+        isDefault: true,
+      }),
+    });
     expect(address.status).toBe(201);
-    const addresses = await request("/api/v1/account/addresses", { headers: { authorization: `Bearer ${customerToken}` } });
+    const addresses = await request("/api/v1/account/addresses", {
+      headers: { authorization: `Bearer ${customerToken}` },
+    });
     expect(addresses.body.data).toHaveLength(1);
     const product = store.listProducts()[0]!;
-    const review = await request("/api/v1/account/reviews", { method: "POST", headers: { authorization: `Bearer ${customerToken}` }, body: JSON.stringify({ productId: product.id, rating: 5, title: "Beautiful", body: "Thoughtfully made and exactly as described." }) });
+    const review = await request("/api/v1/account/reviews", {
+      method: "POST",
+      headers: { authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({
+        productId: product.id,
+        rating: 5,
+        title: "Beautiful",
+        body: "Thoughtfully made and exactly as described.",
+      }),
+    });
     expect(review.status).toBe(201);
-    const moderated = await request(`/api/v1/admin/reviews/${review.body.data.id}`, { method: "PATCH", headers: { authorization: `Bearer ${adminToken}` }, body: JSON.stringify({ status: "APPROVED" }) });
+    const customerReviews = await request("/api/v1/account/reviews", {
+      headers: { authorization: `Bearer ${customerToken}` },
+    });
+    expect(customerReviews.status).toBe(200);
+    expect(customerReviews.body.data[0]).toMatchObject({
+      id: review.body.data.id,
+      productId: product.id,
+      status: "PENDING",
+      product: { id: product.id, name: product.name },
+    });
+    const otherAccountReviews = await request("/api/v1/account/reviews", {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(otherAccountReviews.body.data).toEqual([]);
+    expect((await request("/api/v1/account/reviews")).status).toBe(401);
+    const moderated = await request(
+      `/api/v1/admin/reviews/${review.body.data.id}`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ status: "APPROVED" }),
+      },
+    );
     expect(moderated.status).toBe(200);
-    const publicReviews = await request(`/api/v1/products/${product.id}/reviews`);
+    const publicReviews = await request(
+      `/api/v1/products/${product.id}/reviews`,
+    );
     expect(publicReviews.body.data[0].rating).toBe(5);
-    const ticket = await request("/api/v1/account/support", { method: "POST", headers: { authorization: `Bearer ${customerToken}` }, body: JSON.stringify({ subject: "Delivery question", message: "Please confirm the expected delivery window.", priority: "NORMAL" }) });
+    const ticket = await request("/api/v1/account/support", {
+      method: "POST",
+      headers: { authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({
+        subject: "Delivery question",
+        message: "Please confirm the expected delivery window.",
+        priority: "NORMAL",
+      }),
+    });
     expect(ticket.status).toBe(201);
-    const tickets = await request("/api/v1/account/support", { headers: { authorization: `Bearer ${customerToken}` } });
+    const tickets = await request("/api/v1/account/support", {
+      headers: { authorization: `Bearer ${customerToken}` },
+    });
     expect(tickets.body.data[0].number).toMatch(/^SUP-/);
   });
   it("validates coupons and applies discounts authoritatively", async () => {
@@ -263,8 +419,17 @@ describe("commerce API", () => {
       body: JSON.stringify({
         lines: [{ variantId: variant.id, quantity: 1 }],
         postalCode: "500081",
-        contact: { name: "Test Customer", email: "customer@example.com", phone: "+919876543210" },
-        shippingAddress: { line1: "1 Test Road", city: "Hyderabad", state: "Telangana", country: "IN" },
+        contact: {
+          name: "Test Customer",
+          email: "customer@example.com",
+          phone: "+919876543210",
+        },
+        shippingAddress: {
+          line1: "1 Test Road",
+          city: "Hyderabad",
+          state: "Telangana",
+          country: "IN",
+        },
         paymentProvider: "cod",
         couponCode: "WELCOME10",
       }),
@@ -278,36 +443,98 @@ describe("commerce API", () => {
       payload = {
         lines: [{ variantId: variant.id, quantity: 2 }],
         postalCode: "500081",
-        contact: { name: "Test Customer", email: "customer@example.com", phone: "+919876543210" },
-        shippingAddress: { line1: "1 Test Road", city: "Hyderabad", state: "Telangana", country: "IN" },
+        contact: {
+          name: "Test Customer",
+          email: "customer@example.com",
+          phone: "+919876543210",
+        },
+        shippingAddress: {
+          line1: "1 Test Road",
+          city: "Hyderabad",
+          state: "Telangana",
+          country: "IN",
+        },
         paymentProvider: "razorpay",
       },
       key = `checkout-${crypto.randomUUID()}`;
     const one = await request("/api/v1/checkout", {
       method: "POST",
-      headers: { "idempotency-key": key },
+      headers: {
+        "idempotency-key": key,
+        authorization: `Bearer ${customerToken}`,
+      },
       body: JSON.stringify(payload),
     });
     expect(one.status).toBe(201);
     expect(one.body.data.order.subtotal).toBe(variant.price * 2);
     const two = await request("/api/v1/checkout", {
       method: "POST",
-      headers: { "idempotency-key": key },
+      headers: {
+        "idempotency-key": key,
+        authorization: `Bearer ${customerToken}`,
+      },
       body: JSON.stringify(payload),
     });
     expect(two.status).toBe(200);
     expect(two.body.data.order.id).toBe(one.body.data.order.id);
     const conflict = await request("/api/v1/checkout", {
       method: "POST",
-      headers: { "idempotency-key": key },
-      body: JSON.stringify({ ...payload, lines: [{ variantId: variant.id, quantity: 1 }] }),
+      headers: {
+        "idempotency-key": key,
+        authorization: `Bearer ${customerToken}`,
+      },
+      body: JSON.stringify({
+        ...payload,
+        lines: [{ variantId: variant.id, quantity: 1 }],
+      }),
     });
     expect(conflict.status).toBe(409);
     expect(conflict.body.error.code).toBe("IDEMPOTENCY_CONFLICT");
-    const cancelled=await request("/api/v1/payments/client-events",{method:"POST",body:JSON.stringify({orderNumber:one.body.data.order.number,providerOrderId:one.body.data.payment.externalId,type:"CANCELLED"})});
+    const cancelled = await request("/api/v1/payments/client-events", {
+      method: "POST",
+      body: JSON.stringify({
+        orderNumber: one.body.data.order.number,
+        providerOrderId: one.body.data.payment.externalId,
+        type: "CANCELLED",
+        gatewayPaymentId: "pay_cancelled_customer_1",
+        errorCode: "CUSTOMER_CANCELLED",
+        errorDescription: "Customer closed the payment window",
+      }),
+    });
     expect(cancelled.status).toBe(200);
     expect(cancelled.body.data.status).toBe("CANCELLED");
-    const retried=await request("/api/v1/payments/retry",{method:"POST",body:JSON.stringify({orderNumber:one.body.data.order.number,provider:"razorpay",contact:"customer@example.com"})});
+    const customerPayments = await request("/api/v1/account/payments", {
+      headers: { authorization: `Bearer ${customerToken}` },
+    });
+    expect(customerPayments.status).toBe(200);
+    const ownedPayment = customerPayments.body.data.find(
+      (payment: any) => payment.orderNumber === one.body.data.order.number,
+    );
+    expect(ownedPayment).toMatchObject({
+      provider: "razorpay",
+      status: "CANCELLED",
+      amount: one.body.data.order.total,
+      providerReference: one.body.data.payment.externalId,
+      transactionId: "pay_cancelled_customer_1",
+    });
+    expect(ownedPayment.events[0]).toMatchObject({
+      errorCode: "CUSTOMER_CANCELLED",
+    });
+    expect(ownedPayment).not.toHaveProperty("idempotencyKey");
+    expect(JSON.stringify(ownedPayment)).not.toContain("clientToken");
+    const isolatedPayments = await request("/api/v1/account/payments", {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(isolatedPayments.body.data).toEqual([]);
+    expect((await request("/api/v1/account/payments")).status).toBe(401);
+    const retried = await request("/api/v1/payments/retry", {
+      method: "POST",
+      body: JSON.stringify({
+        orderNumber: one.body.data.order.number,
+        provider: "razorpay",
+        contact: "customer@example.com",
+      }),
+    });
     expect(retried.status).toBe(201);
     expect(retried.body.data.payment.status).toBe("CREATED");
   });
@@ -323,8 +550,17 @@ describe("commerce API", () => {
           { variantId: variant.id, quantity: 20 },
         ],
         postalCode: "500081",
-        contact: { name: "Test Customer", email: "customer@example.com", phone: "+919876543210" },
-        shippingAddress: { line1: "1 Test Road", city: "Hyderabad", state: "Telangana", country: "IN" },
+        contact: {
+          name: "Test Customer",
+          email: "customer@example.com",
+          phone: "+919876543210",
+        },
+        shippingAddress: {
+          line1: "1 Test Road",
+          city: "Hyderabad",
+          state: "Telangana",
+          country: "IN",
+        },
         paymentProvider: "cod",
       }),
     });
@@ -346,8 +582,17 @@ describe("commerce API", () => {
           { variantId: unavailable.id, quantity: 20 },
         ],
         postalCode: "500081",
-        contact: { name: "Test Customer", email: "customer@example.com", phone: "+919876543210" },
-        shippingAddress: { line1: "1 Test Road", city: "Hyderabad", state: "Telangana", country: "IN" },
+        contact: {
+          name: "Test Customer",
+          email: "customer@example.com",
+          phone: "+919876543210",
+        },
+        shippingAddress: {
+          line1: "1 Test Road",
+          city: "Hyderabad",
+          state: "Telangana",
+          country: "IN",
+        },
         paymentProvider: "cod",
       }),
     });
@@ -355,7 +600,9 @@ describe("commerce API", () => {
     expect(available.reserved).toBe(before);
   });
   it("enforces the order state machine and creates shipments only when packed", async () => {
-    const order = [...store.orders.values()].find((candidate) => candidate.status === "PAYMENT_PENDING")!;
+    const order = [...store.orders.values()].find(
+      (candidate) => candidate.status === "PAYMENT_PENDING",
+    )!;
     const invalid = await request(`/api/v1/admin/orders/${order.id}/status`, {
       method: "PATCH",
       headers: { authorization: `Bearer ${adminToken}` },
@@ -411,13 +658,34 @@ describe("commerce API", () => {
   });
   it("does not expose tracking details without matching checkout contact", async () => {
     const order = [...store.orders.values()][0]!;
-    const denied = await request(`/api/v1/orders/${order.number}/track?contact=attacker@example.com`);
+    const denied = await request(
+      `/api/v1/orders/${order.number}/track?contact=attacker@example.com`,
+    );
     expect(denied.status).toBe(404);
-    const allowed = await request(`/api/v1/orders/${order.number}/track?contact=customer@example.com`);
+    const allowed = await request(
+      `/api/v1/orders/${order.number}/track?contact=customer@example.com`,
+    );
     expect(allowed.status).toBe(200);
     expect(allowed.body.data.number).toBe(order.number);
   });
-  it("generates a customer invoice PDF without exposing another account",async()=>{const order=[...store.orders.values()].find(item=>item.userId===store.findUser("ananya@example.com")?.id)!;const denied=await fetch(`${base}/api/v1/orders/${order.id}/invoice`,{headers:{authorization:`Bearer ${adminToken.replace(/.$/,"x")}`}});expect(denied.status).toBe(401);const response=await fetch(`${base}/api/v1/orders/${order.id}/invoice`,{headers:{authorization:`Bearer ${customerToken}`}}),bytes=Buffer.from(await response.arrayBuffer());expect(response.status).toBe(200);expect(response.headers.get("content-type")).toContain("application/pdf");expect(response.headers.get("content-disposition")).toContain(order.number);expect(bytes.subarray(0,4).toString()).toBe("%PDF");expect(bytes.length).toBeGreaterThan(1500)});
+  it("generates a customer invoice PDF without exposing another account", async () => {
+    const order = [...store.orders.values()].find(
+      (item) => item.userId === store.findUser("ananya@example.com")?.id,
+    )!;
+    const denied = await fetch(`${base}/api/v1/orders/${order.id}/invoice`, {
+      headers: { authorization: `Bearer ${adminToken.replace(/.$/, "x")}` },
+    });
+    expect(denied.status).toBe(401);
+    const response = await fetch(`${base}/api/v1/orders/${order.id}/invoice`, {
+        headers: { authorization: `Bearer ${customerToken}` },
+      }),
+      bytes = Buffer.from(await response.arrayBuffer());
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/pdf");
+    expect(response.headers.get("content-disposition")).toContain(order.number);
+    expect(bytes.subarray(0, 4).toString()).toBe("%PDF");
+    expect(bytes.length).toBeGreaterThan(1500);
+  });
   it("encrypts integration credentials and never returns plaintext", async () => {
     const r = await request("/api/v1/admin/integrations", {
       method: "PUT",
@@ -446,15 +714,31 @@ describe("commerce API", () => {
   });
   it("deletes the customer identity while retaining detached owner order records", async () => {
     const customer = store.findUser("ananya@example.com")!;
-    const ownedOrders = [...store.orders.values()].filter(order => order.userId === customer.id);
-    const wrong = await request("/api/v1/account", { method: "DELETE", headers: { authorization: `Bearer ${customerToken}` }, body: JSON.stringify({ confirmation: "delete" }) });
+    const ownedOrders = [...store.orders.values()].filter(
+      (order) => order.userId === customer.id,
+    );
+    const wrong = await request("/api/v1/account", {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({ confirmation: "delete" }),
+    });
     expect(wrong.status).toBe(400);
-    const deleted = await request("/api/v1/account", { method: "DELETE", headers: { authorization: `Bearer ${customerToken}` }, body: JSON.stringify({ confirmation: "DELETE" }) });
+    const deleted = await request("/api/v1/account", {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({ confirmation: "DELETE" }),
+    });
     expect(deleted.status).toBe(200);
     expect(deleted.body.data.retainedOrders).toBe(ownedOrders.length);
     expect(store.findUser("ananya@example.com")).toBeUndefined();
-    expect(ownedOrders.every(order => store.orders.get(order.id)?.userId === undefined)).toBe(true);
-    const account = await request("/api/v1/auth/me", { headers: { authorization: `Bearer ${customerToken}` } });
+    expect(
+      ownedOrders.every(
+        (order) => store.orders.get(order.id)?.userId === undefined,
+      ),
+    ).toBe(true);
+    const account = await request("/api/v1/auth/me", {
+      headers: { authorization: `Bearer ${customerToken}` },
+    });
     expect(account.status).toBe(404);
   });
 });
