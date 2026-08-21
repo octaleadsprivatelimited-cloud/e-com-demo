@@ -303,6 +303,12 @@ describe("commerce API", () => {
     });
     expect(conflict.status).toBe(409);
     expect(conflict.body.error.code).toBe("IDEMPOTENCY_CONFLICT");
+    const cancelled=await request("/api/v1/payments/client-events",{method:"POST",body:JSON.stringify({orderNumber:one.body.data.order.number,providerOrderId:one.body.data.payment.externalId,type:"CANCELLED"})});
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.data.status).toBe("CANCELLED");
+    const retried=await request("/api/v1/payments/retry",{method:"POST",body:JSON.stringify({orderNumber:one.body.data.order.number,provider:"razorpay",contact:"customer@example.com"})});
+    expect(retried.status).toBe(201);
+    expect(retried.body.data.payment.status).toBe("CREATED");
   });
   it("rejects overselling", async () => {
     const variant = store.listProducts().find((x) => x.status === "ACTIVE")!

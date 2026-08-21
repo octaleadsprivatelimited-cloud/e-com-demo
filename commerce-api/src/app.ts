@@ -42,6 +42,9 @@ import {
   mobileOtpRequestSchema,
   mobileOtpVerifySchema,
   googleLoginSchema,
+  paymentClientEventSchema,
+  paymentRetrySchema,
+  paymentReconcileSchema,
 } from "./schemas.js";
 import { validate } from "./validate.js";
 import { CommerceStore, seedStore, type StoredUser } from "./store.js";
@@ -223,12 +226,12 @@ export async function createApp(overrides?: {
           orderId = bound.orderId;
           shipmentId = bound.shipmentId;
         }
-        const target = eventType === "payment.captured" ? "PAID" : eventType === "payment.failed" ? "FAILED" : eventType === "shipment.out_for_delivery" ? "OUT_FOR_DELIVERY" : eventType === "shipment.delivered" ? "DELIVERED" : undefined,
+        const target = eventType === "payment.captured" ? "PAID" : eventType === "payment.failed" ? "FAILED" : eventType === "payment.refunded" ? "REFUNDED" : eventType === "shipment.out_for_delivery" ? "OUT_FOR_DELIVERY" : eventType === "shipment.delivered" ? "DELIVERED" : undefined,
           order = orderId ? store.orders.get(orderId) : undefined;
         if (!target) throw new AppError(422, "WEBHOOK_EVENT_NOT_SUPPORTED", "Webhook event type is not supported");
         if (target && !order) throw new AppError(404, "ORDER_NOT_FOUND", "Webhook order was not found");
         if (target && order) assertOrderTransition(order.status, target);
-        const persisted = await persistence?.processWebhook({ provider, eventId, payloadHash: crypto.createHash("sha256").update(raw).digest("hex"), orderId: order?.id, from: order?.status, to: target, paymentId, paymentStatus: paymentId ? (target === "PAID" ? "CAPTURED" : "FAILED") : undefined, externalPaymentId: String(payload.payload?.payment?.entity?.id || "") || undefined, shipmentId, shipmentStatus: shipmentId ? target : undefined, location: typeof payload.location === "string" ? payload.location : undefined, occurredAt: payload.current_timestamp ? new Date(payload.current_timestamp) : undefined, safePayload: { type: eventType, orderId: orderId || undefined } });
+        const persisted = await persistence?.processWebhook({ provider, eventId, payloadHash: crypto.createHash("sha256").update(raw).digest("hex"), orderId: order?.id, from: order?.status, to: target, paymentId, paymentStatus: paymentId ? (target === "PAID" ? "CAPTURED" : target === "REFUNDED" ? "REFUNDED" : "FAILED") : undefined, paymentAmount: Number(payload.payload?.payment?.entity?.amount || 0) / 100, paymentErrorCode: String(payload.payload?.payment?.entity?.error_code || "") || undefined, paymentErrorDescription: String(payload.payload?.payment?.entity?.error_description || "") || undefined, externalPaymentId: String(payload.payload?.payment?.entity?.id || "") || undefined, shipmentId, shipmentStatus: shipmentId ? target : undefined, location: typeof payload.location === "string" ? payload.location : undefined, occurredAt: payload.current_timestamp ? new Date(payload.current_timestamp) : undefined, safePayload: { type: eventType, orderId: orderId || undefined } });
         if (persisted?.duplicate) return ok(res, { duplicate: true }, "Already processed");
         if (target && order) {
           store.transitionOrder(order.id, target, undefined, provider);
@@ -837,15 +840,9 @@ export async function createApp(overrides?: {
           trackingVerificationHash: crypto.createHash("sha256").update(String(req.body.contact.email || req.body.contact.phone).trim().toLowerCase()).digest("hex"),
         });
         createdOrderId = order.id;
-        const payment =
-          isCod
-            ? null
-            : await resolvePaymentProvider(req.body.paymentProvider).createOrder({
-                orderId: order.id,
-                amount: { amount: total, currency: "INR" },
-                idempotencyKey: `pay:${key}`,
-              });
-        order.payment = payment;
+        let payment:null|{externalId:string;clientToken?:string}=null,paymentFailure:{code:string;message:string;retryable:boolean;fallbackOptions:string[]}|undefined;
+        if(!isCod)try{payment=await resolvePaymentProvider(req.body.paymentProvider).createOrder({orderId:order.id,amount:{amount:total,currency:"INR"},idempotencyKey:`pay:${key}`})}catch(error){if(!(error instanceof AppError)||error.code!=="PAYMENT_PROVIDER_ERROR")throw error;const details=(error.details||{}) as Record<string,unknown>;paymentFailure={code:String(details.category||error.code),message:"The selected payment gateway is temporarily unavailable. Your order is saved; retry or choose Cash on Delivery.",retryable:Boolean(details.retryable),fallbackOptions:["cod"]};order.payment={externalId:`unavailable:${order.id}`,provider:req.body.paymentProvider,status:"FAILED",lastError:{code:paymentFailure.code,description:paymentFailure.message}}}
+        if(payment)order.payment={...payment,provider:req.body.paymentProvider,status:"CREATED"};else if(isCod)order.payment=null;
         await persistence?.saveOrderAndReservations(
           order,
           {
@@ -862,9 +859,9 @@ export async function createApp(overrides?: {
         if (coupon) coupon.used++;
         return ok(
           res,
-          { order, payment, shipping: rates[0] },
-          "Checkout created",
-          201,
+          { order, payment, paymentFailure, fallbackOptions:paymentFailure?.fallbackOptions||[], shipping: rates[0] },
+          paymentFailure?"Order saved; payment requires another attempt":"Checkout created",
+          paymentFailure?202:201,
         );
       } catch (e) {
         if (reserved) store.releaseMany(req.body.lines);
@@ -873,6 +870,8 @@ export async function createApp(overrides?: {
       }
     },
   );
+  app.post("/api/v1/payments/client-events",limiter(20,60000),validate(paymentClientEventSchema),async(req,res)=>{if(persistence)return ok(res,await persistence.recordPaymentClientEvent(req.body),"Payment attempt recorded");const order=[...store.orders.values()].find(item=>item.number===req.body.orderNumber&&item.payment?.externalId===req.body.providerOrderId);if(!order||!order.payment)throw new AppError(404,"PAYMENT_NOT_FOUND","Payment attempt was not found");order.payment.status=req.body.type;order.payment.gatewayTransactionId=req.body.gatewayPaymentId;order.payment.lastError={code:req.body.errorCode,description:req.body.errorDescription};store.auditLogs.unshift({id:crypto.randomUUID(),action:`payment.${req.body.type.toLowerCase()}`,resource:"payment",resourceId:order.payment.externalId,after:{gatewayTransactionId:req.body.gatewayPaymentId,errorCode:req.body.errorCode},createdAt:new Date().toISOString()});return ok(res,order.payment,"Payment attempt recorded")});
+  app.post("/api/v1/payments/retry",limiter(5,60000),validate(paymentRetrySchema),async(req,res)=>{const order=[...store.orders.values()].find(item=>item.number===req.body.orderNumber),supplied=crypto.createHash("sha256").update(req.body.contact.trim().toLowerCase()).digest("hex");if(!order||order.status!=="PAYMENT_PENDING"||!order.trackingVerificationHash||!crypto.timingSafeEqual(Buffer.from(supplied),Buffer.from(order.trackingVerificationHash)))throw new AppError(404,"ORDER_NOT_FOUND","Pending order was not found");const provider=resolvePaymentProvider(req.body.provider),attemptKey=`retry:${order.id}:${crypto.randomUUID()}`,payment=await provider.createOrder({orderId:order.id,amount:{amount:order.total,currency:"INR"},idempotencyKey:attemptKey}),attempt={...payment,provider:req.body.provider,status:"CREATED"};order.payment=attempt;await persistence?.createPaymentAttempt(order.id,req.body.provider,payment.externalId,order.total,attemptKey);return ok(res,{order:{number:order.number,status:order.status},payment:attempt},"New payment attempt created",201)});
   app.get("/api/v1/orders/:number/track", limiter(30, 60_000), async (req, res) => {
     const order = [...store.orders.values()].find(
       (x) => x.number === String(req.params.number),
@@ -960,6 +959,8 @@ export async function createApp(overrides?: {
   app.get("/api/v1/admin/orders", auth, authorize("orders:read"), (_req, res) =>
     ok(res, [...store.orders.values()]),
   );
+  app.get("/api/v1/admin/payments",auth,authorize("payments:read"),async(_req,res)=>ok(res,persistence?await persistence.listPayments():[...store.orders.values()].filter(order=>order.payment).map(order=>({orderNumber:order.number,amount:order.total,currency:"INR",...order.payment}))));
+  app.post("/api/v1/admin/payments/reconcile",auth,authorize("payments:read"),validate(paymentReconcileSchema),async(req,res)=>{if(!persistence)throw new AppError(503,"DATABASE_REQUIRED","Payment reconciliation requires persistent payment records");const payments=await persistence.listPayments(),payment=payments.find(item=>item.id===req.body.paymentId);if(!payment?.externalId)throw new AppError(404,"PAYMENT_NOT_FOUND","Payment was not found");const gateway=await resolvePaymentProvider(payment.provider),status=await gateway.lookup(payment.externalId),result=await persistence.reconcilePayment(payment.id,status);const order=[...store.orders.values()].find(item=>item.number===result.orderNumber);if(order&&status.status==="CAPTURED"&&order.status==="PAYMENT_PENDING")store.transitionOrder(order.id,"PAID",req.principal!.sub,"RECONCILIATION");return ok(res,result,"Payment reconciled")});
   app.get("/api/v1/admin/customers", auth, authorize("customers:read"), (_req, res) =>
     ok(res, [...store.users.values()].filter(user => user.role === "CUSTOMER").map(user => ({ id: user.id, name: user.name, email: user.email, orders: [...store.orders.values()].filter(order => order.userId === user.id).length }))),
   );

@@ -178,3 +178,4 @@ export const supportReplySchema = z.object({ message: z.string().trim().min(1).m
 export const totpVerifySchema = z.object({ code: z.string().regex(/^\d{6}$/) });
 export { storefrontConfigSchema } from "./storefront-config.js";
 export { promotionConfigSchema, recommendationRequestSchema } from "./promotions.js";
+export { paymentClientEventSchema, paymentRetrySchema, paymentReconcileSchema } from "./payment-lifecycle.js";

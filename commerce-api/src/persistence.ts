@@ -593,7 +593,7 @@ export class PrismaPersistence {
     return shipment ? { awb: shipment.awb, courier: shipment.courier || shipment.provider, trackingUrl: shipment.trackingUrl, status: shipment.status, events: shipment.events.map(event => ({ status: event.status, location: event.location, occurredAt: event.occurredAt.toISOString() })) } : null;
   }
 
-  async processWebhook(input: { provider: string; eventId: string; payloadHash: string; orderId?: string; from?: string; to?: string; paymentId?: string; paymentStatus?: "CAPTURED" | "FAILED"; externalPaymentId?: string; shipmentId?: string; shipmentStatus?: string; location?: string; occurredAt?: Date; safePayload?: Prisma.InputJsonValue }) {
+  async processWebhook(input: { provider: string; eventId: string; payloadHash: string; orderId?: string; from?: string; to?: string; paymentId?: string; paymentStatus?: "CAPTURED" | "FAILED" | "REFUNDED" | "AUTHORIZED" | "CANCELLED"; externalPaymentId?: string; paymentAmount?: number; paymentErrorCode?: string; paymentErrorDescription?: string; shipmentId?: string; shipmentStatus?: string; location?: string; occurredAt?: Date; safePayload?: Prisma.InputJsonValue }) {
     try {
       await this.db.$transaction(async (tx) => {
         await tx.webhookEvent.create({ data: { provider: input.provider, externalId: input.eventId, signatureValid: true, status: "PROCESSED", payloadHash: input.payloadHash, safePayload: input.safePayload, processedAt: new Date() } });
@@ -604,7 +604,7 @@ export class PrismaPersistence {
         }
         if (input.paymentId && input.paymentStatus) {
           await tx.payment.update({ where: { id: input.paymentId }, data: { status: input.paymentStatus } });
-          if (input.externalPaymentId) await tx.paymentTransaction.create({ data: { paymentId: input.paymentId, providerEventId: input.externalPaymentId, kind: input.paymentStatus === "CAPTURED" ? "CAPTURE" : "FAILURE", amount: 0, safePayload: {} } });
+          if (input.externalPaymentId) await tx.paymentTransaction.create({ data: { paymentId: input.paymentId, providerEventId: `${input.provider}:${input.eventId}:${input.externalPaymentId}`, kind: input.paymentStatus, amount: input.paymentAmount || 0, safePayload: { errorCode: input.paymentErrorCode, errorDescription: input.paymentErrorDescription } } });
         }
         if (input.shipmentId && input.shipmentStatus) {
           await tx.shipment.update({ where: { id: input.shipmentId }, data: { status: input.shipmentStatus } });
@@ -648,6 +648,16 @@ export class PrismaPersistence {
     });
     if (changed.count !== 1) throw new AppError(409, "RETURN_ALREADY_DECIDED", "Return request is no longer pending");
   }
+
+  async listPayments(){const payments=await this.db.payment.findMany({orderBy:{createdAt:"desc"},include:{order:{select:{number:true,userId:true}},transactions:{orderBy:{createdAt:"desc"}},refunds:{orderBy:{createdAt:"desc"}}}});return payments.map(payment=>({...payment,amount:Number(payment.amount),transactions:payment.transactions.map(transaction=>({...transaction,amount:Number(transaction.amount)})),refunds:payment.refunds.map(refund=>({...refund,amount:Number(refund.amount)}))}))}
+
+  async paymentForOrder(orderNumber:string,providerOrderId:string){return this.db.payment.findFirst({where:{externalId:providerOrderId,order:{number:orderNumber}},include:{order:true}})}
+
+  async recordPaymentClientEvent(input:{orderNumber:string;providerOrderId:string;type:"CANCELLED"|"FAILED";gatewayPaymentId?:string;errorCode?:string;errorDescription?:string}){return this.db.$transaction(async tx=>{const payment=await tx.payment.findFirst({where:{externalId:input.providerOrderId,order:{number:input.orderNumber}}});if(!payment)throw new AppError(404,"PAYMENT_NOT_FOUND","Payment attempt was not found");const providerEventId=`client:${input.type}:${input.gatewayPaymentId||crypto.randomUUID()}`;await tx.paymentTransaction.create({data:{paymentId:payment.id,providerEventId,kind:input.type,amount:0,safePayload:{errorCode:input.errorCode,errorDescription:input.errorDescription}}});return tx.payment.update({where:{id:payment.id},data:{status:input.type as never}})})}
+
+  async createPaymentAttempt(orderId:string,provider:string,externalId:string,amount:number,idempotencyKey:string){return this.db.payment.create({data:{orderId,provider,externalId,status:"CREATED",amount,currency:"INR",idempotencyKey}})}
+
+  async reconcilePayment(paymentId:string,status:{status:string;gatewayPaymentId?:string;amount?:number;currency?:string;errorCode?:string;errorDescription?:string}){return this.db.$transaction(async tx=>{const payment=await tx.payment.findUnique({where:{id:paymentId},include:{order:true}});if(!payment)throw new AppError(404,"PAYMENT_NOT_FOUND","Payment was not found");if(status.amount!==undefined&&Math.abs(status.amount-Number(payment.amount))>.01)throw new AppError(422,"PAYMENT_AMOUNT_MISMATCH","Gateway amount does not match the order amount");const providerEventId=`reconcile:${payment.provider}:${status.gatewayPaymentId||payment.externalId}:${status.status}`;await tx.paymentTransaction.upsert({where:{providerEventId},update:{safePayload:{errorCode:status.errorCode,errorDescription:status.errorDescription}},create:{paymentId:payment.id,providerEventId,kind:`RECONCILE_${status.status}`,amount:status.amount||0,safePayload:{errorCode:status.errorCode,errorDescription:status.errorDescription}}});await tx.payment.update({where:{id:payment.id},data:{status:status.status as never,verifiedAt:status.status==="CAPTURED"?new Date():payment.verifiedAt}});if(status.status==="CAPTURED"&&payment.order.status==="PAYMENT_PENDING"){await tx.order.update({where:{id:payment.orderId},data:{status:"PAID"}});await tx.orderHistory.create({data:{orderId:payment.orderId,fromStatus:"PAYMENT_PENDING",toStatus:"PAID",source:`${payment.provider}:reconciliation`,metadata:{gatewayPaymentId:status.gatewayPaymentId}}})}return {paymentId:payment.id,orderNumber:payment.order.number,...status}})}
 
   async beginRefund(orderId: string, amount: number, idempotencyKey: string) {
     return this.db.$transaction(async (tx) => {

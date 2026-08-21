@@ -145,9 +145,10 @@ export function CheckoutPage() {
   const total = cart.subtotal + (cart.subtotal >= 5000 ? 0 : 299);
   const openRazorpay = async (payment: { externalId: string; clientToken?: string }, number: string) => {
     if (!(window as any).Razorpay) await new Promise<void>((resolve, reject) => { const script = document.createElement("script"); script.src = "https://checkout.razorpay.com/v1/checkout.js"; script.async = true; script.onload = () => resolve(); script.onerror = () => reject(new Error("Secure payment window could not be loaded")); document.head.appendChild(script); });
+    const record=async(type:"CANCELLED"|"FAILED",details:Record<string,unknown>={})=>{try{await commerceApi("/api/v1/payments/client-events",{method:"POST",body:JSON.stringify({orderNumber:number,providerOrderId:payment.externalId,type,...details})})}catch{/* Gateway webhook reconciliation remains authoritative. */}};
     await new Promise<void>((resolve, reject) => {
-      const checkout = new (window as any).Razorpay({ key: payment.clientToken, order_id: payment.externalId, name: "Aster & Row", description: `Order ${number}`, prefill: { name: contact.name, email: contact.email, contact: contact.phone }, handler: () => resolve(), modal: { ondismiss: () => reject(new Error("Payment was not completed; your order remains pending")) }, theme: { color: "#17221e" } });
-      checkout.on("payment.failed", () => reject(new Error("Payment was declined; try again from your account")));
+      const checkout = new (window as any).Razorpay({ key: payment.clientToken, order_id: payment.externalId, name: "Aster & Row", description: `Order ${number}`, prefill: { name: contact.name, email: contact.email, contact: contact.phone }, handler: () => resolve(), modal: { ondismiss: () => {void record("CANCELLED");reject(new Error("Payment was cancelled. Your order is saved and can be paid again."))} }, theme: { color: "#17221e" } });
+      checkout.on("payment.failed", (response:any) => {const error=response?.error||{};void record("FAILED",{gatewayPaymentId:error.metadata?.payment_id,errorCode:error.code,errorDescription:error.description});reject(new Error(error.description||"Payment was declined. Try another method or retry from your account."))});
       checkout.open();
     });
   };
@@ -180,7 +181,7 @@ export function CheckoutPage() {
           throw new Error(`${product.name} has no available variant`);
         return { variantId: variant.id, quantity: entry.quantity };
       });
-      const result = await commerceApi<{ order: { number: string }; payment: { externalId: string; clientToken?: string } | null }>(
+      const result = await commerceApi<{ order: { number: string }; payment: { externalId: string; clientToken?: string } | null; paymentFailure?:{message:string;fallbackOptions:string[]} }>(
         "/api/v1/checkout",
         {
           method: "POST",
@@ -189,6 +190,7 @@ export function CheckoutPage() {
         },
       );
       setOrderNumber(result.order.number);
+      if(result.paymentFailure){setPaymentProvider("cod");throw new Error(`${result.paymentFailure.message} Cash on Delivery is now selected.`)}
       if (paymentProvider === "razorpay" && result.payment) await openRazorpay(result.payment, result.order.number);
       cart.clear();
       setPlaced(true);
