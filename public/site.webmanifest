@@ -1,0 +1,17 @@
+{
+  "name": "MM Tours & Travels",
+  "short_name": "MM Tours",
+  "description": "Car, tempo traveller and bus rentals from Hyderabad across India.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fdfbf8",
+  "theme_color": "#111315",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

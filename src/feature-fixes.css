@@ -1,0 +1,10 @@
+.mobile-filter-head{display:none}.clear-filter{margin-top:22px;font-size:8px;text-decoration:underline}.catalog-heart.active{background:#a85132;color:white}.catalog-heart.active svg{fill:currentColor}.no-results{min-height:420px;display:grid;place-content:center;justify-items:center;text-align:center}.no-results>svg{width:36px;height:36px;margin-bottom:15px}.no-results h2{font:24px Georgia}.no-results p{font-size:9px;color:#777;margin:7px}.no-results button{font-size:9px;text-decoration:underline;margin-top:10px}.filter-backdrop,.mobile-filters{display:none}.module-empty{min-height:260px;display:grid;place-content:center;justify-items:center;text-align:center;color:#6f7773}.module-empty>svg{width:38px;height:38px;padding:10px;background:#f0f3f1;border-radius:50%;margin-bottom:13px}.module-empty h3{font:18px Georgia;color:#1d2824}.module-empty p{font-size:8px;margin-top:6px}
+@media(max-width:850px){.filter-backdrop{display:block;position:fixed;inset:0;background:#0008;z-index:49}.mobile-filters{display:block;position:fixed;right:0;top:0;bottom:0;width:min(360px,90vw);background:#f5f2eb;z-index:50;padding:24px;overflow:auto}.mobile-filter-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px}.mobile-filter-head h2{font:25px Georgia}.mobile-filter-head svg{width:18px}.mobile-filters h3{font:16px Georgia;margin:18px 0 10px}.mobile-filters>button:not(.clear-filter){display:flex;justify-content:space-between;width:100%;padding:9px 0;font-size:10px}.mobile-filters>button.active{color:#a85132}.mobile-filters hr{border:0;border-top:1px solid #ddd8cf;margin:20px 0}.mobile-filters label{display:block;font-size:10px;margin:11px 0}}
+/* Storefront accessibility contrast and footer heading parity. */
+.store-shell .product-info p,.store-shell footer>div:first-child p{color:#5f625f}
+.store-shell .rating span,.store-shell .price s{color:#5d605d}
+.store-shell .story-art i{color:#8e3c23}
+.store-shell .story-copy .eyebrow,.store-shell .principles b{color:#e39b7f}
+.store-shell .newsletter .eyebrow{color:#83341f}
+.store-shell .newsletter small{color:#4d4b46}
+.store-shell footer h3{font:15px Georgia;margin-bottom:19px}

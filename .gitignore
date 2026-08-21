@@ -15,3 +15,9 @@ out/
 .env.production.local
 *.log
 .DS_Store
+.pnpm-store/
+.wrangler/
+commerce-api/node_modules/
+commerce-api/dist/
+.tanstack/
+*.tsbuildinfo

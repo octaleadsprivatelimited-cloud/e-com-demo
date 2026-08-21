@@ -1,0 +1,96 @@
+.portal-nav > a {
+  height: 43px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  color: #aeb8b3;
+  font-size: 11px;
+  position: relative;
+}
+
+.integration-config{position:fixed;z-index:80;top:50%;left:50%;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 48px);overflow:auto;transform:translate(-50%,-50%);box-shadow:0 24px 80px #17221e40}.integration-config .panel-head button{width:36px;height:36px;display:grid;place-items:center}.integration-config .panel-head svg{width:16px}.integration-config .form-panel{padding:20px}.integration-config .form-panel>label,.integration-config .form-row label{padding:0}.integration-config .check{display:flex;flex-direction:row;align-items:center}.integration-config .check input{min-height:auto}.integration-config .primary{margin-left:auto}
+.portal-nav > a svg {
+  width: 16px;
+  height: 16px;
+}
+.portal-nav > a.active {
+  background: #ffffff12;
+  color: white;
+}
+.portal-nav > a.active > i {
+  position: absolute;
+  right: -18px;
+  width: 3px;
+  height: 22px;
+  background: #bd7050;
+  border-radius: 4px;
+}
+@media (max-width: 1050px) {
+  .portal-nav > a {
+    justify-content: center;
+  }
+  .portal-nav > a span {
+    display: none;
+  }
+  .portal-nav > a.active > i {
+    right: -18px;
+  }
+}
+.portal-mobile-head,
+.portal-drawer-backdrop {
+  display: none;
+}
+@media (max-width: 700px) {
+  .portal.portal-drawer-open > aside {
+    display: flex;
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(286px, 86vw);
+    z-index: 100;
+    padding-top: 18px;
+    box-shadow: 12px 0 35px #0005;
+  }
+  .portal-drawer-open .portal-nav > a {
+    justify-content: flex-start;
+  }
+  .portal-drawer-open .portal-nav > a span {
+    display: inline;
+  }
+  .portal-drawer-open .portal-nav > a.active > i {
+    right: -18px;
+  }
+  .portal-drawer-open .portal-mobile-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .portal-mobile-head .portal-logo {
+    padding-bottom: 18px;
+  }
+  .portal-mobile-head > button {
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+  }
+  .portal-mobile-head svg {
+    width: 18px;
+  }
+  .portal-drawer-open .portal-desktop-logo {
+    display: none;
+  }
+  .portal-drawer-open .portal-drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: #08120e99;
+    z-index: 99;
+  }
+}
+/* Accessibility contrast corrections for compact portal text. */
+.portal{--p-muted:#606964}
+.portal .portal-eyebrow{color:#9b4930}
+.portal .portal-user>div{background:#9d4f33}
+.portal .type-grid button.active>span{background:#9d4f33}

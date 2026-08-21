@@ -71,6 +71,20 @@ export class AuthService {
       this.rateLimitStore.set(rateLimitKey, { count: 1, windowStart: now });
     }
 
+    // Preserve an outstanding challenge so an unauthenticated resend cannot
+    // invalidate the code already delivered to the customer.
+    const active = this.otpStore.get(mobile);
+    if (active && active.expiresAt > now && active.attempts < active.maxAttempts) {
+      const isDev = process.env.NODE_ENV !== 'production';
+      return {
+        success: true,
+        message: isDev
+          ? 'Existing OTP remains active (dev mode — shown in response)'
+          : 'OTP sent to your registered mobile number',
+        ...(isDev ? { otp: active.otp } : {}),
+      };
+    }
+
     // Generate cryptographically secure 6-digit OTP
     const otpBytes = crypto.randomBytes(3);
     const otpNum = (otpBytes.readUIntBE(0, 3) % 900000) + 100000;

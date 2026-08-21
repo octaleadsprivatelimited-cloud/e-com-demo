@@ -9,6 +9,7 @@ import {
   HttpStatus,
   BadRequestException,
   UnauthorizedException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import * as crypto from 'crypto';
@@ -151,6 +152,9 @@ export class AuthController {
   @Post('admin-login')
   @HttpCode(HttpStatus.OK)
   adminLogin(@Body() body: { pin?: string }, @Req() req: any) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new ForbiddenException('Legacy shared-PIN administration is disabled.');
+    }
     const adminPin = process.env.ADMIN_PIN;
     if (!adminPin) {
       throw new BadRequestException('Admin access is not configured.');
@@ -253,9 +257,8 @@ export class AuthController {
     @Body() dto: DecryptCredentialDto,
   ) {
     this.requireAuth(authHeader);
-
-    const decrypted = this.authService.decryptCredential(dto.encrypted);
-    return { success: true, value: decrypted };
+    void dto;
+    throw new ForbiddenException('Credential plaintext is never returned through the API.');
   }
 
   // ─── Helpers ──────────────────────────────────────────────────

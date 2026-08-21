@@ -1,0 +1,23 @@
+# MM Tours & Travels
+
+MM Tours & Travels is a Hyderabad-based car rental and group travel service operating across Telangana, Andhra Pradesh, and India.
+
+## Main pages
+
+- [Home](https://mmtourstravels.in/): Hyderabad car rentals, airport transfers, outstation trips, and group travel.
+- [Fleet](https://mmtourstravels.in/fleet): Cars, SUVs, tempo travellers, minibuses, and luxury buses.
+- [Services](https://mmtourstravels.in/services): Local rentals, airport transfers, outstation travel, and corporate transport.
+- [Offers](https://mmtourstravels.in/offers): Current travel and rental offers.
+- [About](https://mmtourstravels.in/about): About MM Tours & Travels.
+- [FAQ](https://mmtourstravels.in/faq): Booking, pricing, service area, and vehicle questions.
+- [Contact](https://mmtourstravels.in/contact): Call or WhatsApp +91 90325 33849.
+
+## Service area
+
+Hyderabad, Telangana, Andhra Pradesh, and all-India outstation routes.
+
+## Contact
+
+- Phone and WhatsApp: +91 90325 33849
+- Email: bookings@mmtourstravels.in
+- Location: https://maps.google.com/?q=17.551620,78.469193
