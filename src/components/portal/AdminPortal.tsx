@@ -44,6 +44,7 @@ import {
 } from "@/data/commerce";
 import { commerceApi } from "@/lib/commerce-api";
 import { toast, Toaster } from "sonner";
+import { useLocation } from "@tanstack/react-router";
 
 const nav: [string, React.ReactNode][] = [
   ["Overview", <LayoutDashboard />],
@@ -728,11 +729,12 @@ function Integrations() {
 
 export function AdminPortal() {
   const [active, setActive] = useState("Overview");
+  const location = useLocation();
   useEffect(() => {
     setActive(
-      new URLSearchParams(window.location.search).get("tab") || "Overview",
+      new URLSearchParams(location.searchStr).get("tab") || "Overview",
     );
-  }, []);
+  }, [location.searchStr]);
   return (
     <>
       <Toaster position="bottom-right" richColors />
