@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -751,7 +751,7 @@ export function AdminPortal() {
         }
         nav={nav}
         active={active}
-        onNavigate={setActive}
+        onNavigate={(label) => startTransition(() => setActive(label))}
       >
         {active === "Products" ? (
           <VariantEditor />

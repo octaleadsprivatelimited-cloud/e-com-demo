@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Bell, ChevronDown, Menu, Search, ShoppingBag, X } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 
 export function PortalShell({
   title,
@@ -49,9 +50,11 @@ export function PortalShell({
         </a>
         <div className="portal-nav">
           {nav.map(([label, icon]) => (
-            <a
+            <Link
               aria-label={label}
-              href={`?tab=${encodeURIComponent(label)}`}
+              to="/admin"
+              search={{ tab: label }}
+              preload="intent"
               onClick={() => {
                 onNavigate?.(label);
                 setMenuOpen(false);
@@ -62,7 +65,7 @@ export function PortalShell({
               {icon}
               <span>{label}</span>
               {label === active && <i />}
-            </a>
+            </Link>
           ))}
         </div>
         <div className="portal-user">
