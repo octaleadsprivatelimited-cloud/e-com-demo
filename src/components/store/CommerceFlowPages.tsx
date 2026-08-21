@@ -23,9 +23,12 @@ import {
 } from "@/lib/commerce-api";
 import { StorePage } from "./StoreHeader";
 import { toast, Toaster } from "sonner";
+
+type AppliedCoupon={code:string;discount:number;freeShipping:boolean};
+function useCoupon(subtotal:number){const [input,setInput]=useState(""),[applied,setApplied]=useState<AppliedCoupon|null>(null),[busy,setBusy]=useState(false);const apply=async(code=input)=>{const normalized=code.trim().toUpperCase();if(!normalized){toast.error("Enter a coupon code");return}setBusy(true);try{const result=await commerceApi<AppliedCoupon>("/api/v1/coupons/validate",{method:"POST",body:JSON.stringify({code:normalized,subtotal})});setApplied(result);setInput(result.code);sessionStorage.setItem("commerce_coupon",result.code);toast.success(`${result.code} applied`)}catch(error){setApplied(null);sessionStorage.removeItem("commerce_coupon");toast.error(error instanceof Error?error.message:"Coupon could not be applied")}finally{setBusy(false)}};const remove=()=>{setApplied(null);setInput("");sessionStorage.removeItem("commerce_coupon")};useEffect(()=>{const saved=sessionStorage.getItem("commerce_coupon");if(saved&&subtotal>0)void apply(saved)},[subtotal]);return{input,setInput,applied,busy,apply,remove}}
 export function CartPage() {
   const cart = useCommerceCart();
-  const shipping = cart.subtotal >= 5000 ? 0 : 299;
+  const coupon=useCoupon(cart.subtotal),shipping = coupon.applied?.freeShipping||cart.subtotal >= 5000 ? 0 : 299,total=cart.subtotal+shipping-(coupon.applied?.discount||0);
   return (
     <StorePage>
       <main className="cart-page">
@@ -54,7 +57,7 @@ export function CartPage() {
                     className="line-art"
                     style={{ background: product.tone }}
                   >
-                    {product.glyph}
+                    {product.image ? <img src={product.image} alt="" /> : product.glyph}
                   </div>
                   <div>
                     <small>{product.category}</small>
@@ -101,20 +104,15 @@ export function CartPage() {
                 <span>Estimated GST</span>
                 <b>Included</b>
               </div>
+              {coupon.applied&&<div className="coupon-saving"><span>Coupon {coupon.applied.code}</span><b>−{money(coupon.applied.discount)}</b></div>}
               <hr />
               <div className="summary-total">
                 <span>Total</span>
-                <b>{money(cart.subtotal + shipping)}</b>
+                <b>{money(total)}</b>
               </div>
               <label>
-                <input placeholder="Coupon code" />
-                <button
-                  onClick={() =>
-                    toast.info("Coupon will be validated securely at checkout")
-                  }
-                >
-                  Apply
-                </button>
+                <input placeholder="Coupon code" value={coupon.input} onChange={event=>coupon.setInput(event.target.value.toUpperCase())} disabled={coupon.busy}/>
+                <button onClick={()=>coupon.applied?coupon.remove():void coupon.apply()} disabled={coupon.busy}>{coupon.busy?"Checking…":coupon.applied?"Remove":"Apply"}</button>
               </label>
               <a href="/checkout">
                 Proceed to checkout <ArrowRight />
@@ -133,6 +131,7 @@ export function CartPage() {
 
 export function CheckoutPage() {
   const cart = useCommerceCart();
+  const coupon=useCoupon(cart.subtotal);
   const checkoutKey = useRef(crypto.randomUUID());
   const [step, setStep] = useState(1),
     [placed, setPlaced] = useState(false),
@@ -142,7 +141,7 @@ export function CheckoutPage() {
     [address, setAddress] = useState({ line1: "", line2: "", city: "", state: "Telangana", country: "IN" }),
     [paymentProvider, setPaymentProvider] = useState("razorpay"),
     [busy, setBusy] = useState(false);
-  const total = cart.subtotal + (cart.subtotal >= 5000 ? 0 : 299);
+  const shipping=coupon.applied?.freeShipping||cart.subtotal>=5000?0:299,total=cart.subtotal+shipping-(coupon.applied?.discount||0);
   const openRazorpay = async (payment: { externalId: string; clientToken?: string }, number: string) => {
     if (!(window as any).Razorpay) await new Promise<void>((resolve, reject) => { const script = document.createElement("script"); script.src = "https://checkout.razorpay.com/v1/checkout.js"; script.async = true; script.onload = () => resolve(); script.onerror = () => reject(new Error("Secure payment window could not be loaded")); document.head.appendChild(script); });
     const record=async(type:"CANCELLED"|"FAILED",details:Record<string,unknown>={})=>{try{await commerceApi("/api/v1/payments/client-events",{method:"POST",body:JSON.stringify({orderNumber:number,providerOrderId:payment.externalId,type,...details})})}catch{/* Gateway webhook reconciliation remains authoritative. */}};
@@ -186,7 +185,7 @@ export function CheckoutPage() {
         {
           method: "POST",
           headers: { "idempotency-key": checkoutKey.current },
-          body: JSON.stringify({ lines, postalCode, paymentProvider, contact, shippingAddress: address }),
+          body: JSON.stringify({ lines, postalCode, paymentProvider, contact, shippingAddress: address, couponCode: coupon.applied?.code }),
         },
       );
       setOrderNumber(result.order.number);
@@ -397,7 +396,7 @@ export function CheckoutPage() {
           {cart.lines.map(({ product, entry }, i) => (
             <div className="checkout-line" key={i}>
               <div style={{ background: product.tone }}>
-                {product.glyph}
+                {product.image ? <img src={product.image} alt="" /> : product.glyph}
                 <i>{entry.quantity}</i>
               </div>
               <span>
@@ -416,8 +415,9 @@ export function CheckoutPage() {
           </p>
           <p>
             <span>Shipping</span>
-            <b>{cart.subtotal >= 5000 ? "Free" : money(299)}</b>
+            <b>{shipping ? money(shipping) : "Free"}</b>
           </p>
+          {coupon.applied&&<p className="coupon-saving"><span>Coupon {coupon.applied.code}</span><b>−{money(coupon.applied.discount)}</b></p>}
           <p className="checkout-total">
             <span>Total</span>
             <b>{money(total)}</b>
