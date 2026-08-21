@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   ArrowRight,
   ChevronDown,
@@ -20,6 +20,7 @@ import { useStoreProducts } from "@/lib/store-products";
 import { toast, Toaster } from "sonner";
 import { StoreBrand, useStorefrontConfig } from "@/lib/storefront-config";
 import { CampaignSlot } from "@/lib/promotions";
+import { useCommerceCart } from "@/lib/commerce-cart";
 
 const Logo = () => <StoreBrand />;
 function ProductCard({
@@ -27,7 +28,7 @@ function ProductCard({
   onAdd,
 }: {
   product: Product;
-  onAdd: (p: Product) => void;
+  onAdd: (p: Product, variant?: Record<string, string>) => void;
 }) {
   const [liked, setLiked] = useState(false);
   const [choice, setChoice] = useState(product.options?.[0]?.values[0]);
@@ -47,7 +48,7 @@ function ProductCard({
         ) : (
           <span className="art-glyph">{product.glyph}</span>
         )}
-        <button className="quick" onClick={() => onAdd(product)}>
+        <button className="quick" onClick={() => onAdd(product, choice && product.options?.[0] ? { [product.options[0].name]: choice } : undefined)}>
           Quick add {choice && `· ${choice}`} <Plus />
         </button>
       </div>
@@ -80,40 +81,15 @@ function ProductCard({
 
 export function EcommerceHome() {
   const storefront = useStorefrontConfig(),
-    products = useStoreProducts();
+    products = useStoreProducts(),cart = useCommerceCart();
   const [menu, setMenu] = useState(false),
     [search, setSearch] = useState(false),
-    [cartOpen, setCartOpen] = useState(false),
-    [email, setEmail] = useState("");
-  const [cart, setCart] = useState<Record<string, number>>({});
-  const count = Object.values(cart).reduce((a, b) => a + b, 0),
-    subtotal = useMemo(
-      () => products.reduce((s, p) => s + (cart[p.id] || 0) * p.price, 0),
-      [cart],
-    );
-  const add = (p: Product) => {
-    setCart((c) => ({ ...c, [p.id]: (c[p.id] || 0) + 1 }));
-    try {
-      const key = "aster-row-cart-v1",
-        stored = JSON.parse(localStorage.getItem(key) || "[]");
-      const i = stored.findIndex(
-        (x: { productId: string }) => x.productId === p.id,
-      );
-      if (i >= 0) stored[i].quantity += 1;
-      else stored.push({ productId: p.id, quantity: 1 });
-      localStorage.setItem(key, JSON.stringify(stored));
-      window.dispatchEvent(new Event("commerce-cart"));
-    } catch {}
+    [cartOpen, setCartOpen] = useState(false),[email, setEmail] = useState(""),[query,setQuery]=useState(""),[collection,setCollection]=useState("All");
+  const shownProducts=collection==="All"?products:products.filter(product=>product.category===collection),count=cart.count,subtotal=cart.subtotal;
+  const add = (p: Product,variant?:Record<string,string>) => {
+    cart.add(p.id,variant);
     toast.success(`${p.name} added to bag`);
   };
-  const change = (id: string, n: number) =>
-    setCart((c) => {
-      const x = { ...c },
-        q = (x[id] || 0) + n;
-      if (q <= 0) delete x[id];
-      else x[id] = q;
-      return x;
-    });
   return (
     <div id="top" className="store-shell">
       <Toaster position="bottom-center" richColors />
@@ -157,17 +133,20 @@ export function EcommerceHome() {
         </div>
       </header>
       {search && (
-        <div className="search-bar">
+        <form className="search-bar" onSubmit={event=>{event.preventDefault();if(query.trim())window.location.href=`/shop?q=${encodeURIComponent(query.trim())}`}}>
           <Search />
           <input
             aria-label="Search products"
             autoFocus
+            value={query}
+            onChange={event=>setQuery(event.target.value)}
             placeholder="Search pieces, rooms and collections…"
           />
-          <button aria-label="Close search" onClick={() => setSearch(false)}>
+          <button type="submit" aria-label="Submit search"><ArrowRight /></button>
+          <button type="button" aria-label="Close search" onClick={() => setSearch(false)}>
             <X />
           </button>
-        </div>
+        </form>
       )}
       {menu && (
         <div className="mobile-menu">
@@ -253,7 +232,7 @@ export function EcommerceHome() {
           <div className="category-grid">
             {categories.map(([name, copy, glyph, tone], i) => (
               <a
-                href="#new"
+                href={`/shop?category=${encodeURIComponent(name)}`}
                 className="category-card"
                 key={name}
                 style={{ background: tone }}
@@ -276,14 +255,11 @@ export function EcommerceHome() {
               <h2>New and noteworthy.</h2>
             </div>
             <div className="filter-pills">
-              <button className="selected">All</button>
-              <button>Home</button>
-              <button>Wardrobe</button>
-              <button>Travel</button>
+              {["All","Home","Wardrobe","Travel"].map(item=><button className={collection===item?"selected":""} onClick={()=>setCollection(item)} key={item}>{item}</button>)}
             </div>
           </div>
           <div className="product-grid">
-            {products.map((p) => (
+            {shownProducts.map((p) => (
               <ProductCard key={p.id} product={p} onAdd={add} />
             ))}
           </div>
@@ -437,30 +413,28 @@ export function EcommerceHome() {
                   </button>
                 </div>
               ) : (
-                products
-                  .filter((p) => cart[p.id])
-                  .map((p) => (
-                    <div className="cart-line" key={p.id}>
+                cart.lines.map(({product:p,entry,index}) => (
+                    <div className="cart-line" key={`${p.id}-${index}`}>
                       <div
                         className="cart-thumb"
                         style={{ background: p.tone }}
                       >
-                        {p.glyph}
+                        {p.image ? <img src={p.image} alt="" /> : p.glyph}
                       </div>
                       <div>
                         <h4>{p.name}</h4>
                         <p>{p.category}</p>
                         <div className="qty">
-                          <button onClick={() => change(p.id, -1)}>
+                          <button onClick={() => cart.update(index, entry.quantity - 1)}>
                             <Minus />
                           </button>
-                          <span>{cart[p.id]}</span>
-                          <button onClick={() => change(p.id, 1)}>
+                          <span>{entry.quantity}</span>
+                          <button onClick={() => cart.update(index, entry.quantity + 1)}>
                             <Plus />
                           </button>
                         </div>
                       </div>
-                      <strong>{money(p.price * cart[p.id])}</strong>
+                      <strong>{money(p.price * entry.quantity)}</strong>
                     </div>
                   ))
               )}
@@ -472,14 +446,9 @@ export function EcommerceHome() {
                   <strong>{money(subtotal)}</strong>
                 </div>
                 <p>Shipping and taxes calculated at checkout.</p>
-                <button
-                  className="btn dark"
-                  onClick={() =>
-                    toast.info("Secure checkout is ready for API connection")
-                  }
-                >
+                <a className="btn dark" href="/checkout">
                   Secure checkout <ShieldCheck />
-                </button>
+                </a>
               </div>
             )}
           </aside>

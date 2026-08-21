@@ -215,5 +215,6 @@
 .product-art .art-glyph{transition:transform .55s cubic-bezier(.2,.65,.3,1)}
 .product-card:hover .product-art img,.product-card:focus-within .product-art img,.product-card:hover .art-glyph,.product-card:focus-within .art-glyph,.catalog-art:hover img,.catalog-art:focus-visible img,.detail-art:hover img,.detail-art:focus-within img{transform:scale(1.1)}
 .product-art,.catalog-art,.detail-art{overflow:hidden}
+.cart-thumb img{width:100%;height:100%;object-fit:cover}
 @media (hover:none),(pointer:coarse){.product-card:hover .product-art img,.product-card:hover .art-glyph,.catalog-art:hover img,.detail-art:hover img{transform:none}}
 @media (prefers-reduced-motion:reduce){.product-art img,.catalog-art img,.detail-art img,.product-art .art-glyph{transition:none}}

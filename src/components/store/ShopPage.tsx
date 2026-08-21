@@ -17,7 +17,7 @@ export function ShopPage() {
     typeof window !== "undefined" ? window.location.search : "",
   );
   const [category, setCategory] = useState(params.get("category") || "All"),
-    [query, setQuery] = useState(""),
+    [query, setQuery] = useState(params.get("q") || ""),
     [sort, setSort] = useState("featured"),
     [min, setMin] = useState(""),
     [max, setMax] = useState(""),
