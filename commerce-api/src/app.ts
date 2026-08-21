@@ -37,6 +37,8 @@ import {
   supportTicketSchema,
   totpVerifySchema,
   storefrontConfigSchema,
+  promotionConfigSchema,
+  recommendationRequestSchema,
 } from "./schemas.js";
 import { validate } from "./validate.js";
 import { CommerceStore, seedStore } from "./store.js";
@@ -50,6 +52,7 @@ import { hashPassword, verifyPassword } from "./passwords.js";
 import { PrismaPersistence } from "./persistence.js";
 import { assertOrderTransition } from "./order-state.js";
 import { defaultStorefrontConfig, normalizeHostname, storefrontSettingKey, type StorefrontConfig } from "./storefront-config.js";
+import { activeCampaign, defaultPromotionConfig, type PromotionConfig } from "./promotions.js";
 
 const ok = (
   res: express.Response,
@@ -97,6 +100,7 @@ export async function createApp(overrides?: {
     developmentPayments = new DevelopmentPaymentProvider(),
     developmentShipping = new DevelopmentShippingProvider();
   const developmentStorefronts = new Map<string, StorefrontConfig>();
+  const developmentPromotions = new Map<string, PromotionConfig>();
   if (persistence) {
     await persistence.connect();
     await persistence.hydrate(store);
@@ -239,6 +243,10 @@ export async function createApp(overrides?: {
     return storefrontConfigSchema.parse(stored || fallback || defaultStorefrontConfig);
   };
   app.get("/api/v1/storefront/config", async (req, res) => ok(res, await readStorefront(requestHostname(req))));
+  const promotionKey=(hostname:string)=>`promotions:${normalizeHostname(hostname)}`;
+  const readPromotions=async(hostname:string)=>persistence?await persistence.getSetting<PromotionConfig>(promotionKey(hostname))||await persistence.getSetting<PromotionConfig>(promotionKey("localhost"))||defaultPromotionConfig:developmentPromotions.get(promotionKey(hostname))||developmentPromotions.get(promotionKey("localhost"))||defaultPromotionConfig;
+  app.get("/api/v1/storefront/promotions",async(req,res)=>{const returning=req.query.returning==="true",settings=promotionConfigSchema.parse(await readPromotions(requestHostname(req)));return ok(res,{announcementBars:settings.announcementBars.filter(x=>activeCampaign(x,returning)),banners:settings.banners.filter(x=>activeCampaign(x,returning)),popups:settings.popups.filter(x=>activeCampaign(x,returning))})});
+  app.post("/api/v1/storefront/recommendations",validate(recommendationRequestSchema),async(req,res)=>{const {viewedProductIds,cartProductIds,categories,limit}=req.body,products=store.listProducts().filter(product=>product.status==="ACTIVE"),affinity=new Map<string,number>();for(const id of [...viewedProductIds,...cartProductIds]){const product=products.find(candidate=>candidate.id===id);if(product)affinity.set(product.category,(affinity.get(product.category)||0)+(cartProductIds.includes(id)?4:2))}for(const category of categories)affinity.set(category,(affinity.get(category)||0)+1);const excluded=new Set(cartProductIds),ranked=products.filter(product=>!excluded.has(product.id)).map(product=>({product,score:(affinity.get(product.category)||0)*10+product.variants.reduce((sum,variant)=>sum+variant.stock-variant.reserved,0)/1000,reason:affinity.has(product.category)?`Because you explored ${product.category}`:"Popular in the store"})).sort((a,b)=>b.score-a.score).slice(0,limit);return ok(res,ranked)});
   app.get("/health", (_req, res) =>
     ok(res, { status: "healthy", time: new Date().toISOString() }),
   );
@@ -465,6 +473,9 @@ export async function createApp(overrides?: {
     store.auditLogs.unshift({ id: crypto.randomUUID(), action: "storefront.settings.updated", resource: "Setting", resourceId: hostname, actorId: req.principal!.sub, createdAt: new Date().toISOString() });
     return ok(res, value, "Storefront configuration saved");
   });
+  app.get("/api/v1/admin/promotions",auth,authorize("marketing:update"),async(req,res)=>ok(res,promotionConfigSchema.parse(await readPromotions(requestHostname(req)))));
+  app.put("/api/v1/admin/promotions",auth,authorize("marketing:update"),validate(promotionConfigSchema),async(req,res)=>{const hostname=requestHostname(req),value=req.body as PromotionConfig; persistence?await persistence.saveSetting(promotionKey(hostname),value):developmentPromotions.set(promotionKey(hostname),value);store.auditLogs.unshift({id:crypto.randomUUID(),action:"promotions.updated",resource:"Setting",resourceId:hostname,actorId:req.principal!.sub,createdAt:new Date().toISOString()});return ok(res,value,"Promotions published")});
+  app.get("/api/v1/admin/coupons",auth,authorize("marketing:update"),(_req,res)=>ok(res,[...store.coupons.values()]));
   app.get("/api/v1/auth/me", auth, (req, res) => {
     const user = store.users.get(req.principal!.sub);
     if (!user) throw new AppError(404, "USER_NOT_FOUND", "User not found");

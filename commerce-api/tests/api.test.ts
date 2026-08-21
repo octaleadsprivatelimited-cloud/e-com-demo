@@ -74,6 +74,17 @@ describe("commerce API", () => {
     expect(branded.body.data.storeName).toBe("Customer Store");
     expect(store.auditLogs.some(log => log.action === "storefront.settings.updated")).toBe(true);
   });
+  it("publishes targeted campaigns and recommends products from browsing intent", async () => {
+    const initial = await request("/api/v1/storefront/promotions");
+    expect(initial.status).toBe(200);
+    expect(initial.body.data.banners[0].buttonUrl).toBe("/shop");
+    const unauthorized = await request("/api/v1/admin/promotions");
+    expect(unauthorized.status).toBe(401);
+    const recommendation = await request("/api/v1/storefront/recommendations", { method: "POST", body: JSON.stringify({ categories: ["Home"], viewedProductIds: [], cartProductIds: [], limit: 3 }) });
+    expect(recommendation.status).toBe(200);
+    expect(recommendation.body.data).toHaveLength(3);
+    expect(recommendation.body.data[0].reason).toContain("Home");
+  });
   it("validates registration and hashes passwords", async () => {
     const bad = await request("/api/v1/auth/register", {
       method: "POST",

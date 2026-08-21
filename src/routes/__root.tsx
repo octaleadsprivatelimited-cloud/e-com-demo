@@ -9,10 +9,12 @@ import {
 } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { StorefrontProvider } from "../lib/storefront-config";
+import { PromotionsProvider } from "../lib/promotions";
 
 import appCss from "../styles.css?url";
 import fixesCss from "../feature-fixes.css?url";
 import portalFixCss from "../portal-nav-fix.css?url";
+import commerceGrowthCss from "../commerce-growth.css?url";
 
 function NotFoundComponent() {
   return (
@@ -86,6 +88,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { rel: "stylesheet", href: fixesCss },
       { rel: "stylesheet", href: portalFixCss },
+      { rel: "stylesheet", href: commerceGrowthCss },
       { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
       { rel: "manifest", href: "/site.webmanifest" },
     ],
@@ -115,7 +118,7 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <StorefrontProvider><Outlet /></StorefrontProvider>
+      <StorefrontProvider><PromotionsProvider><Outlet /></PromotionsProvider></StorefrontProvider>
     </QueryClientProvider>
   );
 }

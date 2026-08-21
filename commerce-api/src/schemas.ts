@@ -174,3 +174,4 @@ export const supportTicketSchema = z.object({ subject: z.string().trim().min(3).
 export const supportReplySchema = z.object({ message: z.string().trim().min(1).max(5000), status: z.enum(["OPEN", "WAITING_CUSTOMER", "RESOLVED", "CLOSED"]).optional() });
 export const totpVerifySchema = z.object({ code: z.string().regex(/^\d{6}$/) });
 export { storefrontConfigSchema } from "./storefront-config.js";
+export { promotionConfigSchema, recommendationRequestSchema } from "./promotions.js";
