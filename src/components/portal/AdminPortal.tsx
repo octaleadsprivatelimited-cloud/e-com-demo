@@ -18,8 +18,6 @@ import {
   Globe2,
   LayoutDashboard,
   LifeBuoy,
-  Mail,
-  MessageSquare,
   MoreHorizontal,
   Package,
   Plus,
@@ -48,6 +46,7 @@ import { useLocation } from "@tanstack/react-router";
 import { defaultStorefrontConfig, type StorefrontConfig } from "@/lib/storefront-config";
 import { emptyPromotions, type PromotionConfig } from "@/lib/promotions";
 import { AdminInventoryWorkspace, AdminProductsWorkspace } from "./AdminProductsWorkspace";
+import { AdminIntegrationsWorkspace } from "./AdminIntegrationsWorkspace";
 
 const nav: [string, React.ReactNode][] = [
   ["Overview", <LayoutDashboard />],
@@ -61,56 +60,6 @@ const nav: [string, React.ReactNode][] = [
   ["Analytics", <BarChart3 />],
   ["Integrations", <Code2 />],
   ["Settings", <Settings />],
-];
-const providers = [
-  {
-    name: "Razorpay",
-    type: "Payment",
-    icon: <CreditCard />,
-    status: "Connected",
-    meta: "Live · INR",
-    color: "#4865d5",
-  },
-  {
-    name: "Shiprocket",
-    type: "Shipping",
-    icon: <Truck />,
-    status: "Connected",
-    meta: "Live · Priority 1",
-    color: "#7153c5",
-  },
-  {
-    name: "Delhivery",
-    type: "Shipping",
-    icon: <Package />,
-    status: "Needs setup",
-    meta: "Test mode",
-    color: "#e9514e",
-  },
-  {
-    name: "Resend",
-    type: "Email",
-    icon: <Mail />,
-    status: "Connected",
-    meta: "Transactional",
-    color: "#191919",
-  },
-  {
-    name: "WhatsApp Cloud",
-    type: "Messaging",
-    icon: <MessageSquare />,
-    status: "Needs setup",
-    meta: "Not configured",
-    color: "#31a45d",
-  },
-  {
-    name: "Google Analytics",
-    type: "Analytics",
-    icon: <Activity />,
-    status: "Connected",
-    meta: "GA4 active",
-    color: "#e9a828",
-  },
 ];
 function Dashboard() {
   return (
@@ -638,103 +587,6 @@ function VariantEditor() {
   );
 }
 
-function Integrations() {
-  const [filter, setFilter] = useState("All integrations");
-  const [selected, setSelected] = useState<(typeof providers)[number] | null>(null);
-  const [enabled, setEnabled] = useState(false), [environment, setEnvironment] = useState("TEST"), [priority, setPriority] = useState(1), [credentials, setCredentials] = useState<Record<string, string>>({}), [publicConfig, setPublicConfig] = useState<Record<string, string>>({}), [saving, setSaving] = useState(false);
-  const visible = providers.filter((provider) => filter === "All integrations" || (filter === "Payments" && provider.type === "Payment") || (filter === "Shipping" && provider.type === "Shipping") || (filter === "Communication" && ["Email", "Messaging"].includes(provider.type)) || filter === provider.type);
-  const open = (provider: (typeof providers)[number]) => { setSelected(provider); setEnabled(provider.status === "Connected"); setCredentials({}); setPublicConfig(provider.name === "Shiprocket" ? { pickupPostcode: "500001", pickupLocation: "Primary" } : {}); };
-  const save = async () => {
-    if (!selected) return;
-    setSaving(true);
-    try {
-      const kind = selected.type === "Payment" ? "PAYMENT" : selected.type === "Shipping" ? "SHIPPING" : selected.type === "Email" ? "EMAIL" : selected.type === "Messaging" ? "WHATSAPP" : "ANALYTICS";
-      await commerceApi("/api/v1/admin/integrations", { method: "PUT", body: JSON.stringify({ kind, provider: selected.name.toLowerCase().replace(/\s+/g, "-"), enabled, priority, environment, credentials, publicConfig }) });
-      toast.success(`${selected.name} configuration saved securely`);
-      setSelected(null);
-    } catch (error) { toast.error(error instanceof Error ? error.message : "Integration could not be saved"); }
-    finally { setSaving(false); }
-  };
-  return (
-    <div className="integrations">
-      <div className="editor-top">
-        <div>
-          <p className="portal-eyebrow">Settings</p>
-          <h2>Integrations</h2>
-          <span>
-            Configure payments, shipping, communication and analytics.
-          </span>
-        </div>
-        <button className="primary" onClick={() => toast.info("Choose a provider to configure its credentials")}><Save /> Save changes</button>
-      </div>
-      <div className="integration-tabs">
-        {["All integrations", "Payments", "Shipping", "Communication", "Analytics", "Storage"].map(tab => <button key={tab} className={filter === tab ? "active" : ""} onClick={() => setFilter(tab)}>{tab}</button>)}
-      </div>
-      <div className="integration-grid">
-        {visible.map((p) => (
-          <article className="panel provider" key={p.name}>
-            <div className="provider-icon" style={{ background: p.color }}>
-              {p.icon}
-            </div>
-            <div>
-              <span>{p.type}</span>
-              <h3>{p.name}</h3>
-              <p>{p.meta}</p>
-            </div>
-            <span
-              className={`connection ${p.status === "Connected" ? "on" : "off"}`}
-            >
-              {p.status}
-            </span>
-            <button
-              onClick={() => open(p)}
-            >
-              {p.status === "Connected" ? "Configure" : "Connect"}
-              <ChevronRight />
-            </button>
-          </article>
-        ))}
-      </div>
-      <section className="panel api-security">
-        <ShieldCheck />
-        <div>
-          <h3>Credentials are protected</h3>
-          <p>
-            Secrets are encrypted at rest and never returned to browsers. Saved
-            keys appear masked, for example ••••••••••••ABCD.
-          </p>
-        </div>
-        <button>Review security</button>
-      </section>
-      <section className="panel custom-provider">
-        <div>
-          <Code2 />
-          <div>
-            <h3>Custom API provider</h3>
-            <p>
-              Connect a provider using API key, Bearer token, Basic Auth or
-              OAuth 2.0. Custom executable code is never accepted.
-            </p>
-          </div>
-        </div>
-        <button>
-          <Plus /> Add custom provider
-        </button>
-      </section>
-      {selected && <><button className="filter-backdrop" aria-label="Close integration configuration" onClick={() => setSelected(null)} /><section className="panel integration-config" role="dialog" aria-modal="true" aria-labelledby="integration-title">
-        <div className="panel-head"><div><p className="portal-eyebrow">Secure provider setup</p><h2 id="integration-title">{selected.name}</h2></div><button aria-label="Close" onClick={() => setSelected(null)}><X /></button></div>
-        <div className="form-panel">
-          <div className="form-row"><label>Environment<select value={environment} onChange={event => setEnvironment(event.target.value)}><option>TEST</option><option>LIVE</option></select></label><label>Priority<input type="number" min="1" max="1000" value={priority} onChange={event => setPriority(Number(event.target.value))} /></label></div>
-          <label className="check"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} /> Enable provider</label>
-          {(selected.name === "Razorpay" ? [["keyId", "Key ID"], ["keySecret", "Key secret"], ["webhookSecret", "Webhook secret"]] : selected.name === "Shiprocket" ? [["token", "API token"]] : [["apiKey", "API key"], ["apiSecret", "API secret"]]).map(([key, label]) => <label key={key}>{label}<input type="password" autoComplete="new-password" value={credentials[key] || ""} onChange={event => setCredentials(value => ({ ...value, [key]: event.target.value }))} placeholder="Stored encrypted and shown masked later" /></label>)}
-          {selected.name === "Shiprocket" && <div className="form-row"><label>Pickup PIN<input value={publicConfig.pickupPostcode || ""} onChange={event => setPublicConfig(value => ({ ...value, pickupPostcode: event.target.value }))} /></label><label>Pickup location<input value={publicConfig.pickupLocation || ""} onChange={event => setPublicConfig(value => ({ ...value, pickupLocation: event.target.value }))} /></label></div>}
-          <button className="primary" onClick={save} disabled={saving}><ShieldCheck /> {saving ? "Encrypting and saving…" : "Save secure configuration"}</button>
-        </div>
-      </section></>}
-    </div>
-  );
-}
-
 function WhiteLabelSettings() {
   const [form, setForm] = useState<StorefrontConfig>(defaultStorefrontConfig);
   const [loading, setLoading] = useState(true);
@@ -950,7 +802,7 @@ export function AdminPortal() {
         {active === "Products" ? (
           <AdminProductsWorkspace />
         ) : active === "Integrations" ? (
-          <Integrations />
+          <AdminIntegrationsWorkspace />
         ) : active === "Overview" ? (
           <Dashboard />
         ) : active === "Settings" ? (

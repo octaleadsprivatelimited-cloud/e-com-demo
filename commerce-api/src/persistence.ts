@@ -2054,37 +2054,73 @@ export class PrismaPersistence {
     );
   }
 
-  async saveIntegration(record: StoredIntegration) {
-    await this.db.integrationConfig.upsert({
-      where: {
-        kind_provider_environment: {
-          kind: record.kind as never,
-          provider: record.provider,
-          environment: record.environment,
-        },
-      },
-      update: {
-        enabled: record.enabled,
-        priority: record.priority,
-        encryptedCredentials: Buffer.from(
-          record.encryptedCredentials,
-          "base64",
-        ),
-        publicConfig: record.publicConfig as Prisma.InputJsonValue,
-      },
-      create: {
-        id: record.id,
-        kind: record.kind as never,
-        provider: record.provider,
-        environment: record.environment,
-        enabled: record.enabled,
-        priority: record.priority,
-        encryptedCredentials: Buffer.from(
-          record.encryptedCredentials,
-          "base64",
-        ),
-        publicConfig: record.publicConfig as Prisma.InputJsonValue,
-      },
-    });
+  async saveIntegration(
+    record: StoredIntegration,
+    options?: {
+      actorId?: string;
+      action?: string;
+      before?: Record<string, unknown>;
+      after?: Record<string, unknown>;
+      removeIds?: string[];
+    },
+  ) {
+    try {
+      await this.db.$transaction(async (tx) => {
+        const removeIds = (options?.removeIds || []).filter(
+          (id) => id !== record.id,
+        );
+        if (removeIds.length)
+          await tx.integrationConfig.deleteMany({
+            where: { id: { in: removeIds } },
+          });
+        await tx.integrationConfig.upsert({
+          where: { id: record.id },
+          update: {
+            kind: record.kind as never,
+            provider: record.provider,
+            environment: record.environment,
+            enabled: record.enabled,
+            priority: record.priority,
+            encryptedCredentials: Buffer.from(
+              record.encryptedCredentials,
+              "base64",
+            ),
+            publicConfig: record.publicConfig as Prisma.InputJsonValue,
+          },
+          create: {
+            id: record.id,
+            kind: record.kind as never,
+            provider: record.provider,
+            environment: record.environment,
+            enabled: record.enabled,
+            priority: record.priority,
+            encryptedCredentials: Buffer.from(
+              record.encryptedCredentials,
+              "base64",
+            ),
+            publicConfig: record.publicConfig as Prisma.InputJsonValue,
+          },
+        });
+        if (options?.action)
+          await tx.auditLog.create({
+            data: {
+              userId: options.actorId,
+              action: options.action,
+              resource: "integration",
+              resourceId: record.id,
+              before: options.before as Prisma.InputJsonValue | undefined,
+              after: options.after as Prisma.InputJsonValue | undefined,
+            },
+          });
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === "P2002")
+        throw new AppError(
+          409,
+          "INTEGRATION_CONFLICT",
+          "The integration was changed by another request; reload and try again",
+        );
+      throw error;
+    }
   }
 }

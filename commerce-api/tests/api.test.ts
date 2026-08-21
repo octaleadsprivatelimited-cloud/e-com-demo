@@ -57,6 +57,22 @@ beforeAll(async () => {
       iss: "https://accounts.google.com",
       exp: Math.floor(Date.now() / 1000) + 3600,
     }),
+    providerRequest: async (input, init) => {
+      const url = String(input);
+      if (url === "https://api.razorpay.com/v1/orders?count=1") {
+        const expected = `Basic ${Buffer.from(
+          "rzp_test_public:super-secret-1234",
+        ).toString("base64")}`;
+        return new Response(JSON.stringify({ items: [] }), {
+          status: init?.headers &&
+              (init.headers as Record<string, string>).authorization === expected
+            ? 200
+            : 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(null, { status: 503 });
+    },
   });
   server = created.app.listen(0);
   await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -1527,8 +1543,26 @@ describe("commerce API", () => {
     expect(bytes.subarray(0, 4).toString()).toBe("%PDF");
     expect(bytes.length).toBeGreaterThan(1500);
   });
-  it("encrypts integration credentials and never returns plaintext", async () => {
-    const r = await request("/api/v1/admin/integrations", {
+  it("manages masked integrations without losing or leaking credentials", async () => {
+    const unauthorized = await request("/api/v1/admin/integrations");
+    expect(unauthorized.status).toBe(401);
+
+    const initial = await request(
+      "/api/v1/admin/integrations?environment=TEST",
+      { headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    expect(initial.status).toBe(200);
+    expect(initial.body.data.environment).toBe("TEST");
+    const initialRazorpay = initial.body.data.items.find(
+      (item: any) => item.provider === "razorpay",
+    );
+    expect(initialRazorpay.id).toBe("PAYMENT:razorpay:TEST");
+    expect(initialRazorpay.configured).toBe(false);
+    expect(JSON.stringify(initial.body)).not.toContain(
+      "encryptedCredentials",
+    );
+
+    const incomplete = await request("/api/v1/admin/integrations", {
       method: "PUT",
       headers: { authorization: `Bearer ${adminToken}` },
       body: JSON.stringify({
@@ -1541,9 +1575,209 @@ describe("commerce API", () => {
         publicConfig: { currency: "INR" },
       }),
     });
-    expect(r.status).toBe(200);
-    expect(JSON.stringify(r.body)).not.toContain("super-secret-1234");
-    expect(r.body.data.maskedKeys.keySecret).toMatch(/1234$/);
+    expect(incomplete.status).toBe(422);
+    expect(incomplete.body.error.code).toBe(
+      "INTEGRATION_CONFIGURATION_INCOMPLETE",
+    );
+
+    const unknownSecret = await request("/api/v1/admin/integrations", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        kind: "PAYMENT",
+        provider: "Razorpay",
+        enabled: false,
+        priority: 1,
+        environment: "TEST",
+        credentials: { hiddenBackdoor: "must-not-be-stored" },
+      }),
+    });
+    expect(unknownSecret.status).toBe(400);
+    expect(unknownSecret.body.error.code).toBe(
+      "INTEGRATION_CREDENTIAL_FIELD_INVALID",
+    );
+
+    const saved = await request("/api/v1/admin/integrations", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        kind: "PAYMENT",
+        provider: " RazorPay ",
+        enabled: true,
+        priority: 1,
+        environment: "TEST",
+        credentials: {
+          keyId: "rzp_test_public",
+          keySecret: "super-secret-1234",
+          webhookSecret: "webhook-secret-5678",
+        },
+        publicConfig: { currency: "INR" },
+      }),
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.data.id).toBe(initialRazorpay.id);
+    expect(saved.body.data.provider).toBe("razorpay");
+    expect(saved.body.data.configured).toBe(true);
+    expect(saved.body.data.connected).toBe(false);
+    expect(saved.body.data.maskedCredentials.keySecret).toMatch(/1234$/);
+    expect(JSON.stringify(saved.body)).not.toContain("super-secret-1234");
+    expect(JSON.stringify(saved.body)).not.toContain("webhook-secret-5678");
+
+    const preserved = await request("/api/v1/admin/integrations", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        kind: "PAYMENT",
+        provider: "razorpay",
+        enabled: true,
+        priority: 2,
+        environment: "TEST",
+        credentials: { keyId: "   ", keySecret: "" },
+      }),
+    });
+    expect(preserved.status).toBe(200);
+    expect(preserved.body.data.id).toBe(initialRazorpay.id);
+    expect(preserved.body.data.configured).toBe(true);
+
+    const listed = await request(
+      "/api/v1/admin/integrations?environment=TEST",
+      { headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    const razorpayItems = listed.body.data.items.filter(
+      (item: any) => item.provider === "razorpay",
+    );
+    expect(razorpayItems).toHaveLength(1);
+    expect(razorpayItems[0].id).toBe(initialRazorpay.id);
+
+    const tested = await request(
+      `/api/v1/admin/integrations/${encodeURIComponent(initialRazorpay.id)}/test`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${adminToken}` },
+      },
+    );
+    expect(tested.status).toBe(200);
+    expect(tested.body.data.test.outcome).toBe("CONNECTED");
+    expect(tested.body.data.connected).toBe(true);
+
+    const unsupported = await request("/api/v1/admin/integrations", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        kind: "SHIPPING",
+        provider: "Delhivery",
+        enabled: true,
+        priority: 3,
+        environment: "TEST",
+        credentials: { token: "delhivery-token" },
+        publicConfig: { pickupPostcode: "500001" },
+      }),
+    });
+    expect(unsupported.status).toBe(422);
+    expect(unsupported.body.error.code).toBe(
+      "INTEGRATION_PROVIDER_UNAVAILABLE",
+    );
+    const storedUnsupported = await request("/api/v1/admin/integrations", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        kind: "SHIPPING",
+        provider: "Delhivery",
+        enabled: false,
+        priority: 3,
+        environment: "TEST",
+        credentials: { token: "delhivery-token" },
+        publicConfig: { pickupPostcode: "500001" },
+      }),
+    });
+    expect(storedUnsupported.status).toBe(200);
+    const unsupportedTest = await request(
+      `/api/v1/admin/integrations/${encodeURIComponent(storedUnsupported.body.data.id)}/test`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${adminToken}` },
+      },
+    );
+    expect(unsupportedTest.status).toBe(200);
+    expect(unsupportedTest.body.data.test.outcome).toBe("UNSUPPORTED");
+
+    const resend = await request("/api/v1/admin/integrations", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        kind: "EMAIL",
+        provider: "Resend",
+        enabled: false,
+        priority: 4,
+        environment: "TEST",
+        credentials: { apiKey: "re_secret_1234" },
+        publicConfig: {
+          fromEmail: "orders@example.com",
+          fromName: "Example Store",
+        },
+      }),
+    });
+    expect(resend.status).toBe(200);
+    const resendCleared = await request("/api/v1/admin/integrations", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        kind: "EMAIL",
+        provider: "resend",
+        enabled: true,
+        priority: 4,
+        environment: "TEST",
+        credentials: { apiKey: "" },
+        publicConfig: { fromName: "" },
+      }),
+    });
+    expect(resendCleared.status).toBe(200);
+    expect(resendCleared.body.data.configured).toBe(true);
+    expect(resendCleared.body.data.publicConfig.fromEmail).toBe(
+      "orders@example.com",
+    );
+    expect(resendCleared.body.data.publicConfig).not.toHaveProperty(
+      "fromName",
+    );
+
+    const wrongDisconnect = await request(
+      `/api/v1/admin/integrations/${encodeURIComponent(initialRazorpay.id)}/disconnect`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ confirmation: "disconnect" }),
+      },
+    );
+    expect(wrongDisconnect.status).toBe(400);
+    const disconnected = await request(
+      `/api/v1/admin/integrations/${encodeURIComponent(initialRazorpay.id)}/disconnect`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ confirmation: "DISCONNECT" }),
+      },
+    );
+    expect(disconnected.status).toBe(200);
+    expect(disconnected.body.data.enabled).toBe(false);
+    expect(disconnected.body.data.configured).toBe(false);
+    expect(disconnected.body.data.maskedCredentials).toEqual({});
+    expect(disconnected.body.data.lastTest.outcome).toBe("DISCONNECTED");
+    const testedAfterDisconnect = await request(
+      `/api/v1/admin/integrations/${encodeURIComponent(initialRazorpay.id)}/test`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${adminToken}` },
+      },
+    );
+    expect(testedAfterDisconnect.status).toBe(200);
+    expect(testedAfterDisconnect.body.data.test.outcome).toBe(
+      "UNCONFIGURED",
+    );
+    expect(
+      store.auditLogs.some(
+        (entry) => entry.action === "integration.disconnected",
+      ),
+    ).toBe(true);
   });
   it("rejects unsigned webhooks", async () => {
     const r = await request("/webhooks/razorpay", {

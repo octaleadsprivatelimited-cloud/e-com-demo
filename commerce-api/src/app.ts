@@ -25,6 +25,7 @@ import {
   couponSchema,
   credentials,
   integrationSchema,
+  integrationDisconnectSchema,
   inventoryAdjustmentSchema,
   orderStatusSchema,
   productMediaOrderSchema,
@@ -51,7 +52,12 @@ import {
   accountDeletionSchema,
 } from "./schemas.js";
 import { validate } from "./validate.js";
-import { CommerceStore, seedStore, type StoredUser } from "./store.js";
+import {
+  CommerceStore,
+  seedStore,
+  type StoredIntegration,
+  type StoredUser,
+} from "./store.js";
 import {
   DevelopmentPaymentProvider,
   DevelopmentShippingProvider,
@@ -84,6 +90,19 @@ import {
   queryInteger,
   storefrontProductDto,
 } from "./admin-products.js";
+import {
+  integrationDefinitions,
+  integrationDefinition,
+  integrationConfigured,
+  integrationDto,
+  normalizeProvider,
+  parsePublicConfig,
+  providerPublicConfig,
+  runtimeEnvironment,
+  selectRuntimeIntegration,
+  testIntegrationConnection,
+  type IntegrationOutcome,
+} from "./integrations.js";
 
 const ok = (
   res: express.Response,
@@ -120,6 +139,7 @@ export async function createApp(overrides?: {
   store?: CommerceStore;
   persistence?: PrismaPersistence | null;
   googleVerifier?: typeof verifyGoogleIdToken;
+  providerRequest?: typeof fetch;
 }) {
   const config = overrides?.config || loadConfig(),
     store = overrides?.store || new CommerceStore(),
@@ -133,6 +153,7 @@ export async function createApp(overrides?: {
     developmentPayments = new DevelopmentPaymentProvider(),
     developmentShipping = new DevelopmentShippingProvider();
   const googleVerifier = overrides?.googleVerifier || verifyGoogleIdToken,
+    providerRequest = overrides?.providerRequest || fetch,
     mobileChallenges = new Map<
       string,
       { hash: string; expiresAt: number; attempts: number }
@@ -144,22 +165,20 @@ export async function createApp(overrides?: {
     await persistence.hydrate(store);
   } else seedStore(store);
   const resolvePaymentProvider = (requested: string) => {
-    const integration = [...store.integrations.values()]
-      .filter(
-        (entry) =>
-          entry.kind === "PAYMENT" &&
-          entry.enabled &&
-          entry.provider.toLowerCase() === requested.toLowerCase(),
-      )
-      .sort((a, b) => a.priority - b.priority)[0];
-    if (integration?.provider.toLowerCase() === "razorpay") {
+    const integration = selectRuntimeIntegration(
+      store.integrations.values(),
+      "PAYMENT",
+      requested,
+      config.NODE_ENV,
+    );
+    if (integration && normalizeProvider(integration.provider) === "razorpay") {
       const secrets = vault.decrypt<Record<string, string>>(
         integration.encryptedCredentials,
       );
       return new RazorpayPaymentProvider({
         keyId: secrets.keyId || secrets.key_id || "",
         keySecret: secrets.keySecret || secrets.key_secret || "",
-      });
+      }, providerRequest);
     }
     if (config.NODE_ENV === "production")
       throw new AppError(
@@ -170,17 +189,16 @@ export async function createApp(overrides?: {
     return developmentPayments;
   };
   const resolveShippingProvider = (requested?: string) => {
-    const requestedProvider = requested?.trim().toLowerCase();
-    const integration = [...store.integrations.values()]
-      .filter(
-        (entry) =>
-          entry.kind === "SHIPPING" &&
-          entry.enabled &&
-          (!requestedProvider ||
-            entry.provider.toLowerCase() === requestedProvider),
-      )
-      .sort((a, b) => a.priority - b.priority)[0];
-    if (integration?.provider.toLowerCase() === "shiprocket") {
+    const requestedProvider = requested
+      ? normalizeProvider(requested)
+      : undefined;
+    const integration = selectRuntimeIntegration(
+      store.integrations.values(),
+      "SHIPPING",
+      requestedProvider,
+      config.NODE_ENV,
+    );
+    if (integration && normalizeProvider(integration.provider) === "shiprocket") {
       const secrets = vault.decrypt<Record<string, string>>(
         integration.encryptedCredentials,
       );
@@ -196,7 +214,7 @@ export async function createApp(overrides?: {
           pickupLocation: String(
             integration.publicConfig.pickupLocation || "Primary",
           ),
-        }),
+        }, providerRequest),
       };
     }
     if (
@@ -272,14 +290,19 @@ export async function createApp(overrides?: {
       try {
         const provider = String(req.params.provider),
           raw = req.body as Buffer,
-          integration = [...store.integrations.values()]
-            .filter(
-              (entry) =>
-                ["PAYMENT", "SHIPPING"].includes(entry.kind) &&
-                entry.enabled &&
-                entry.provider.toLowerCase() === provider.toLowerCase(),
-            )
-            .sort((a, b) => a.priority - b.priority)[0],
+          integration =
+            selectRuntimeIntegration(
+              store.integrations.values(),
+              "PAYMENT",
+              provider,
+              config.NODE_ENV,
+            ) ||
+            selectRuntimeIntegration(
+              store.integrations.values(),
+              "SHIPPING",
+              provider,
+              config.NODE_ENV,
+            ),
           integrationSecrets = integration
             ? vault.decrypt<Record<string, string>>(
                 integration.encryptedCredentials,
@@ -3332,19 +3355,131 @@ export async function createApp(overrides?: {
     authorize("audit:read"),
     (_req, res) => ok(res, store.auditLogs),
   );
+  const integrationMatches = (
+    kind: string,
+    provider: string,
+    environment: "TEST" | "LIVE",
+  ) => {
+    const normalized = normalizeProvider(provider);
+    return [...store.integrations.values()]
+      .filter(
+        (entry) =>
+          entry.kind === kind &&
+          entry.environment === environment &&
+          normalizeProvider(entry.provider) === normalized,
+      )
+      .sort(
+        (left, right) =>
+          Number(right.provider === normalized) -
+            Number(left.provider === normalized) ||
+          right.updatedAt.localeCompare(left.updatedAt) ||
+          left.id.localeCompare(right.id),
+      );
+  };
+  const decryptIntegration = (record?: StoredIntegration) => {
+    if (!record) return { credentials: {} as Record<string, string> };
+    try {
+      const value = vault.decrypt<unknown>(record.encryptedCredentials);
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        throw new Error("Credentials are not an object");
+      return {
+        credentials: Object.fromEntries(
+          Object.entries(value as Record<string, unknown>)
+            .filter(([, secret]) => typeof secret === "string")
+            .map(([key, secret]) => [key, secret as string]),
+        ),
+      };
+    } catch {
+      return {
+        credentials: {} as Record<string, string>,
+        unreadable: true,
+      };
+    }
+  };
+  const integrationAuditSnapshot = (
+    record: StoredIntegration,
+    credentialKeys: string[],
+  ) => {
+    const definition = integrationDefinition(record.kind, record.provider);
+    return {
+      kind: record.kind,
+      provider: record.provider,
+      enabled: record.enabled,
+      priority: record.priority,
+      environment: record.environment,
+      publicConfig: definition
+        ? providerPublicConfig(definition, record.publicConfig)
+        : {},
+      configuredCredentialKeys: credentialKeys.sort(),
+    };
+  };
+  const pushIntegrationAudit = (
+    action: string,
+    record: StoredIntegration,
+    actorId: string,
+    before: Record<string, unknown> | undefined,
+    after: Record<string, unknown>,
+  ) =>
+    store.auditLogs.unshift({
+      id: crypto.randomUUID(),
+      action,
+      resource: "integration",
+      resourceId: record.id,
+      actorId,
+      before,
+      after,
+      createdAt: new Date().toISOString(),
+    });
   app.get(
     "/api/v1/admin/integrations",
     auth,
     authorize("settings:read"),
-    (_req, res) =>
-      ok(
-        res,
-        [...store.integrations.values()].map((x) => ({
-          ...x,
-          encryptedCredentials: undefined,
-          masked: "••••••••",
-        })),
-      ),
+    (req, res) => {
+      const requestedEnvironment = String(
+        req.query.environment || runtimeEnvironment(config.NODE_ENV),
+      ).toUpperCase();
+      if (!(["TEST", "LIVE"] as const).includes(requestedEnvironment as never))
+        throw new AppError(
+          400,
+          "INTEGRATION_ENVIRONMENT_INVALID",
+          "Integration environment must be TEST or LIVE",
+        );
+      const environment = requestedEnvironment as "TEST" | "LIVE";
+      const requestedKind = req.query.kind
+        ? String(req.query.kind).toUpperCase()
+        : undefined;
+      if (
+        requestedKind &&
+        !integrationDefinitions.some(
+          (definition) => definition.kind === requestedKind,
+        )
+      )
+        throw new AppError(
+          400,
+          "INTEGRATION_KIND_INVALID",
+          "Unknown integration kind",
+        );
+      const items = integrationDefinitions
+        .filter(
+          (definition) => !requestedKind || definition.kind === requestedKind,
+        )
+        .map((definition) => {
+          const record = integrationMatches(
+            definition.kind,
+            definition.provider,
+            environment,
+          )[0];
+          const { credentials } = decryptIntegration(record);
+          return integrationDto({
+            definition,
+            environment,
+            record,
+            credentials,
+            mask: (value) => vault.mask(value),
+          });
+        });
+      return ok(res, { items, environment });
+    },
   );
   app.put(
     "/api/v1/admin/integrations",
@@ -3352,29 +3487,326 @@ export async function createApp(overrides?: {
     authorize("settings:update"),
     validate(integrationSchema),
     async (req, res) => {
-      const id = `${req.body.kind}:${req.body.provider}:${req.body.environment}`,
-        record = {
-          id,
-          ...req.body,
-          encryptedCredentials: vault.encrypt(req.body.credentials),
-          credentials: undefined,
-          updatedAt: new Date().toISOString(),
-        };
-      store.integrations.set(id, record);
-      await persistence?.saveIntegration(record);
+      const provider = normalizeProvider(req.body.provider);
+      const definition = integrationDefinition(req.body.kind, provider);
+      if (!definition)
+        throw new AppError(
+          422,
+          "INTEGRATION_PROVIDER_UNSUPPORTED",
+          "This provider is not supported for the selected integration kind",
+        );
+      const environment = req.body.environment as "TEST" | "LIVE";
+      const matches = integrationMatches(
+        definition.kind,
+        provider,
+        environment,
+      );
+      const existing = matches[0];
+      const existingState = decryptIntegration(existing);
+      const suppliedCredentials = (req.body.credentials || {}) as Record<
+        string,
+        string
+      >;
+      const allowedCredentialKeys = new Set(
+        definition.credentialFields.map((field) => field.key),
+      );
+      const unknownCredentialKeys = Object.keys(suppliedCredentials).filter(
+        (key) => !allowedCredentialKeys.has(key),
+      );
+      if (unknownCredentialKeys.length)
+        throw new AppError(
+          400,
+          "INTEGRATION_CREDENTIAL_FIELD_INVALID",
+          "Unknown credential fields were supplied",
+          { fields: unknownCredentialKeys.sort() },
+        );
+      const usableSuppliedCredentials = Object.fromEntries(
+        Object.entries(suppliedCredentials).filter(([, value]) =>
+          Boolean(value.trim()),
+        ),
+      );
+      const suppliedRequiredCredentials = definition.credentialFields
+        .filter((field) => field.required)
+        .every((field) => Boolean(usableSuppliedCredentials[field.key]));
+      if (
+        existingState.unreadable &&
+        !suppliedRequiredCredentials
+      )
+        throw new AppError(
+          409,
+          "INTEGRATION_CREDENTIALS_UNREADABLE",
+          "Stored credentials cannot be preserved; disconnect or replace all required credentials",
+        );
+      const credentials = {
+        ...(existingState.unreadable ? {} : existingState.credentials),
+        ...usableSuppliedCredentials,
+      };
+      const suppliedPublicConfig = (req.body.publicConfig || {}) as Record<
+        string,
+        unknown
+      >;
+      const publicFields = new Map(
+        definition.publicFields.map((field) => [field.key, field]),
+      );
+      const unknownPublicFields = Object.keys(suppliedPublicConfig).filter(
+        (key) => !publicFields.has(key),
+      );
+      if (unknownPublicFields.length)
+        throw new AppError(
+          400,
+          "INTEGRATION_PUBLIC_FIELD_INVALID",
+          "Unknown public configuration fields were supplied",
+          { fields: unknownPublicFields.sort() },
+        );
+      const publicConfigCandidate: Record<string, unknown> = {
+        ...(definition.defaults || {}),
+        ...providerPublicConfig(definition, existing?.publicConfig || {}),
+      };
+      for (const [key, value] of Object.entries(suppliedPublicConfig)) {
+        if (typeof value === "string" && !value.trim())
+          delete publicConfigCandidate[key];
+        else publicConfigCandidate[key] = value;
+      }
+      let publicConfig: Record<string, unknown>;
+      try {
+        publicConfig = parsePublicConfig(definition, publicConfigCandidate);
+      } catch (error) {
+        throw new AppError(
+          400,
+          "INTEGRATION_CONFIG_INVALID",
+          "Provider configuration is invalid",
+          typeof (error as { flatten?: unknown }).flatten === "function"
+            ? (error as { flatten: () => unknown }).flatten()
+            : undefined,
+        );
+      }
+      if (req.body.enabled && !definition.liveOperations)
+        throw new AppError(
+          422,
+          "INTEGRATION_PROVIDER_UNAVAILABLE",
+          "This provider does not have a live server adapter yet",
+        );
+      if (
+        req.body.enabled &&
+        !integrationConfigured(definition, credentials, publicConfig)
+      )
+        throw new AppError(
+          422,
+          "INTEGRATION_CONFIGURATION_INCOMPLETE",
+          "All required credentials and public settings are needed before enabling",
+        );
+      const credentialsChanged = Object.entries(
+        usableSuppliedCredentials,
+      ).some(([key, value]) => existingState.credentials[key] !== value);
+      const publicConfigChanged =
+        JSON.stringify(
+          providerPublicConfig(definition, existing?.publicConfig || {}),
+        ) !==
+        JSON.stringify(publicConfig);
+      const connection =
+        existing && !credentialsChanged && !publicConfigChanged
+          ? existing.publicConfig._connection
+          : {
+              outcome: "UNTESTED" satisfies IntegrationOutcome,
+              message: "Connection has not been tested with this configuration.",
+            };
+      const record: StoredIntegration = {
+        id: `${definition.kind}:${provider}:${environment}`,
+        kind: definition.kind,
+        provider,
+        enabled: req.body.enabled,
+        priority: req.body.priority,
+        environment,
+        encryptedCredentials: vault.encrypt(credentials),
+        publicConfig: {
+          ...publicConfig,
+          ...(connection ? { _connection: connection } : {}),
+        },
+        updatedAt: new Date().toISOString(),
+      };
+      const before = existing
+        ? integrationAuditSnapshot(
+            existing,
+            Object.keys(existingState.credentials),
+          )
+        : undefined;
+      const after = integrationAuditSnapshot(record, Object.keys(credentials));
+      await persistence?.saveIntegration(record, {
+        actorId: req.principal!.sub,
+        action: "integration.saved",
+        before,
+        after,
+        removeIds: matches.map((entry) => entry.id),
+      });
+      for (const item of matches) store.integrations.delete(item.id);
+      store.integrations.set(record.id, record);
+      pushIntegrationAudit(
+        "integration.saved",
+        record,
+        req.principal!.sub,
+        before,
+        after,
+      );
+      return ok(
+        res,
+        integrationDto({
+          definition,
+          environment,
+          record,
+          credentials,
+          mask: (value) => vault.mask(value),
+        }),
+        "Integration saved",
+      );
+    },
+  );
+  app.post(
+    "/api/v1/admin/integrations/:id/test",
+    auth,
+    authorize("settings:update"),
+    limiter(10, 60_000),
+    async (req, res) => {
+      const existing = store.integrations.get(String(req.params.id));
+      if (!existing)
+        throw new AppError(
+          404,
+          "INTEGRATION_NOT_FOUND",
+          "Integration configuration was not found",
+        );
+      const definition = integrationDefinition(
+        existing.kind,
+        existing.provider,
+      );
+      if (!definition)
+        throw new AppError(
+          422,
+          "INTEGRATION_PROVIDER_UNSUPPORTED",
+          "This provider is not supported for a connection test",
+        );
+      const { credentials } = decryptIntegration(existing);
+      const result = await testIntegrationConnection({
+        definition,
+        credentials,
+        publicConfig: providerPublicConfig(
+          definition,
+          existing.publicConfig,
+        ),
+        request: providerRequest,
+      });
+      const record: StoredIntegration = {
+        ...existing,
+        publicConfig: {
+          ...providerPublicConfig(definition, existing.publicConfig),
+          _connection: result,
+        },
+        updatedAt: new Date().toISOString(),
+      };
+      const before = integrationAuditSnapshot(
+        existing,
+        Object.keys(credentials),
+      );
+      const after = {
+        ...integrationAuditSnapshot(record, Object.keys(credentials)),
+        testOutcome: result.outcome,
+      };
+      await persistence?.saveIntegration(record, {
+        actorId: req.principal!.sub,
+        action: "integration.connection_tested",
+        before,
+        after,
+      });
+      store.integrations.set(record.id, record);
+      pushIntegrationAudit(
+        "integration.connection_tested",
+        record,
+        req.principal!.sub,
+        before,
+        after,
+      );
       return ok(
         res,
         {
-          ...record,
-          encryptedCredentials: undefined,
-          maskedKeys: Object.fromEntries(
-            Object.entries(req.body.credentials).map(([k, v]) => [
-              k,
-              vault.mask(String(v)),
-            ]),
-          ),
+          ...integrationDto({
+            definition,
+            environment: record.environment as "TEST" | "LIVE",
+            record,
+            credentials,
+            mask: (value) => vault.mask(value),
+          }),
+          test: result,
         },
-        "Integration saved",
+        "Connection test completed",
+      );
+    },
+  );
+  app.post(
+    "/api/v1/admin/integrations/:id/disconnect",
+    auth,
+    authorize("settings:update"),
+    validate(integrationDisconnectSchema),
+    async (req, res) => {
+      const existing = store.integrations.get(String(req.params.id));
+      if (!existing)
+        throw new AppError(
+          404,
+          "INTEGRATION_NOT_FOUND",
+          "Integration configuration was not found",
+        );
+      const definition = integrationDefinition(
+        existing.kind,
+        existing.provider,
+      );
+      if (!definition)
+        throw new AppError(
+          422,
+          "INTEGRATION_PROVIDER_UNSUPPORTED",
+          "This provider is not supported",
+        );
+      const testedAt = new Date().toISOString();
+      const record: StoredIntegration = {
+        ...existing,
+        enabled: false,
+        encryptedCredentials: vault.encrypt({}),
+        publicConfig: {
+          ...providerPublicConfig(definition, existing.publicConfig),
+          _connection: {
+            outcome: "DISCONNECTED" satisfies IntegrationOutcome,
+            testedAt,
+            message: "Credentials were deliberately removed.",
+          },
+        },
+        updatedAt: testedAt,
+      };
+      const previousState = decryptIntegration(existing);
+      const before = integrationAuditSnapshot(
+        existing,
+        Object.keys(previousState.credentials),
+      );
+      const after = integrationAuditSnapshot(record, []);
+      await persistence?.saveIntegration(record, {
+        actorId: req.principal!.sub,
+        action: "integration.disconnected",
+        before,
+        after,
+      });
+      store.integrations.set(record.id, record);
+      pushIntegrationAudit(
+        "integration.disconnected",
+        record,
+        req.principal!.sub,
+        before,
+        after,
+      );
+      return ok(
+        res,
+        integrationDto({
+          definition,
+          environment: record.environment as "TEST" | "LIVE",
+          record,
+          credentials: {},
+          mask: (value) => vault.mask(value),
+        }),
+        "Integration disconnected",
       );
     },
   );

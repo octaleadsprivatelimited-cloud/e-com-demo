@@ -118,12 +118,25 @@ export const integrationSchema = z.object({
     "STORAGE",
     "ANALYTICS",
   ]),
-  provider: z.string().min(2).max(80),
+  provider: z.string().trim().min(2).max(80),
   enabled: z.boolean(),
   priority: z.number().int().min(1).max(1000),
   environment: z.enum(["TEST", "LIVE"]),
-  credentials: z.record(z.string().max(2000)),
-  publicConfig: z.record(z.unknown()).default({}),
+  credentials: z
+    .record(z.string().max(2000))
+    .refine((value) => Object.keys(value).length <= 20, {
+      message: "Too many credential fields",
+    })
+    .optional(),
+  publicConfig: z
+    .record(z.unknown())
+    .refine((value) => Object.keys(value).length <= 50, {
+      message: "Too many public configuration fields",
+    })
+    .optional(),
+});
+export const integrationDisconnectSchema = z.object({
+  confirmation: z.literal("DISCONNECT"),
 });
 export const orderStatusSchema = z.object({
   status: z.enum([

@@ -414,13 +414,87 @@ paths:
         }
   /api/v1/admin/integrations:
     get:
-      summary: List masked integrations
+      summary: List authoritative masked integration states and capabilities
       security: [{ bearerAuth: [] }]
-      responses: { "200": { description: Integrations } }
+      parameters:
+        - {
+            in: query,
+            name: environment,
+            schema: { type: string, enum: [TEST, LIVE] },
+            description: Defaults to LIVE in production and TEST otherwise,
+          }
+        - {
+            in: query,
+            name: kind,
+            schema:
+              {
+                type: string,
+                enum: [PAYMENT, SHIPPING, EMAIL, SMS, WHATSAPP, STORAGE, ANALYTICS],
+              },
+          }
+      responses:
+        {
+          "200":
+            {
+              description: Every known provider with masked configuration state; encrypted and plaintext secrets are never returned,
+            },
+          "400": { $ref: "#/components/responses/Error" },
+        }
     put:
-      summary: Save encrypted provider credentials
+      summary: Save provider configuration while preserving omitted or blank secrets
       security: [{ bearerAuth: [] }]
-      responses: { "200": { description: Saved } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IntegrationWrite" }
+      responses:
+        {
+          "200": { description: Masked authoritative integration state },
+          "400": { $ref: "#/components/responses/Error" },
+          "409": { $ref: "#/components/responses/Error" },
+          "422": { $ref: "#/components/responses/Error" },
+        }
+  /api/v1/admin/integrations/{id}/test:
+    post:
+      summary: Perform a rate-limited non-mutating provider credential probe
+      description: Returns a truthful CONNECTED, FAILED, UNSUPPORTED, or UNCONFIGURED outcome without returning provider response bodies.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - {
+            in: path,
+            name: id,
+            required: true,
+            schema: { type: string, example: "PAYMENT:razorpay:TEST" },
+          }
+      responses:
+        {
+          "200": { description: Masked integration state and test outcome },
+          "404": { $ref: "#/components/responses/Error" },
+          "429": { $ref: "#/components/responses/Error" },
+        }
+  /api/v1/admin/integrations/{id}/disconnect:
+    post:
+      summary: Explicitly disable an integration and irreversibly clear its credentials
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - {
+            in: path,
+            name: id,
+            required: true,
+            schema: { type: string, example: "PAYMENT:razorpay:TEST" },
+          }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IntegrationDisconnect" }
+      responses:
+        {
+          "200": { description: Disabled, unconfigured masked integration state },
+          "400": { $ref: "#/components/responses/Error" },
+          "404": { $ref: "#/components/responses/Error" },
+        }
   /webhooks/{provider}:
     post:
       summary: Receive signed idempotent provider event
@@ -517,6 +591,36 @@ components:
               stock: { type: integer, minimum: 0, description: Initial stock for new variants; ignored for existing variants. }
               attributes: { type: object, additionalProperties: { type: string } }
               weightGrams: { type: integer, minimum: 1 }
+    IntegrationWrite:
+      type: object
+      required: [kind, provider, enabled, priority, environment]
+      properties:
+        kind:
+          type: string
+          enum: [PAYMENT, SHIPPING, EMAIL, SMS, WHATSAPP, STORAGE, ANALYTICS]
+        provider:
+          type: string
+          minLength: 2
+          maxLength: 80
+          description: Normalized by the server to a stable lowercase slug.
+        enabled: { type: boolean }
+        priority: { type: integer, minimum: 1, maximum: 1000 }
+        environment: { type: string, enum: [TEST, LIVE] }
+        credentials:
+          type: object
+          maxProperties: 20
+          additionalProperties: { type: string, maxLength: 2000 }
+          description: Only provider-declared keys are accepted. Omitted and blank known values preserve stored encrypted secrets.
+        publicConfig:
+          type: object
+          maxProperties: 50
+          additionalProperties: true
+          description: Provider-specific non-secret configuration. A blank optional text field clears it.
+    IntegrationDisconnect:
+      type: object
+      required: [confirmation]
+      properties:
+        confirmation: { type: string, const: DISCONNECT }
     InventoryAdjustment:
       type: object
       required: [quantity, reason]
