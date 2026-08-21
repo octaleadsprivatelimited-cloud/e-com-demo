@@ -3,3 +3,9 @@
 .promo-popup>button{right:12px;top:12px;width:38px;height:38px;border:1px solid #d8dcd9;border-radius:50%;background:#f6f7f5;color:#17221e;display:grid;place-items:center;cursor:pointer;z-index:2;transition:background .2s ease,color .2s ease,transform .2s ease}
 .promo-popup>button:hover,.promo-popup>button:focus-visible{background:#17221e;color:#fff;transform:scale(1.06);outline:2px solid #fff;outline-offset:2px}
 .promo-popup>button svg{width:19px;height:19px;stroke-width:2.2}
+.campaign-popup-backdrop{z-index:120}
+.campaign-banner.campaign-popup{position:fixed;z-index:121;left:50%;top:50%;transform:translate(-50%,-50%);margin:0;width:min(680px,calc(100% - 32px));min-height:330px;border-radius:16px;box-shadow:0 30px 100px #0006;padding:clamp(32px,6vw,64px);overflow:hidden}
+.campaign-popup .campaign-popup-close{position:absolute;right:14px;top:14px;width:40px;height:40px;border:1px solid #ffffff80;border-radius:50%;background:#f6f7f5;color:#17221e;display:grid;place-items:center;cursor:pointer;z-index:2;transition:background .2s ease,color .2s ease,transform .2s ease}
+.campaign-popup .campaign-popup-close:hover,.campaign-popup .campaign-popup-close:focus-visible{background:#17221e;color:#fff;transform:scale(1.06);outline:2px solid #fff;outline-offset:2px}
+.campaign-popup .campaign-popup-close svg{width:19px;height:19px}
+@media(max-width:700px){.campaign-banner.campaign-popup{min-height:300px;padding:48px 25px 30px}.campaign-popup .campaign-popup-close{right:10px;top:10px}}
