@@ -10,6 +10,10 @@ import type { AppConfig } from "../src/config.js";
 import { AppError } from "../src/errors.js";
 import { signAccessToken } from "../src/security.js";
 import { CommerceStore, seedStore } from "../src/store.js";
+import {
+  customerMetrics,
+  customerSegments,
+} from "../src/admin-customer-operations.js";
 const config: AppConfig = {
   NODE_ENV: "test",
   PORT: 4001,
@@ -812,6 +816,8 @@ describe("commerce API", () => {
       `/api/v1/products/${product.id}/reviews`,
     );
     expect(publicReviews.body.data[0].rating).toBe(5);
+    expect(publicReviews.body.data[0]).not.toHaveProperty("userId");
+    expect(publicReviews.body.data[0]).not.toHaveProperty("customerId");
     const ticket = await request("/api/v1/account/support", {
       method: "POST",
       headers: { authorization: `Bearer ${customerToken}` },
@@ -822,6 +828,24 @@ describe("commerce API", () => {
       }),
     });
     expect(ticket.status).toBe(201);
+    const simultaneousTickets = await Promise.all(
+      ["First simultaneous request", "Second simultaneous request"].map(
+        (subject) =>
+          request("/api/v1/account/support", {
+            method: "POST",
+            headers: { authorization: `Bearer ${customerToken}` },
+            body: JSON.stringify({
+              subject,
+              message: "Created concurrently to verify unique ticket numbers.",
+              priority: "NORMAL",
+            }),
+          }),
+      ),
+    );
+    expect(simultaneousTickets.map((item) => item.status)).toEqual([201, 201]);
+    expect(
+      new Set(simultaneousTickets.map((item) => item.body.data.number)).size,
+    ).toBe(2);
     const tickets = await request("/api/v1/account/support", {
       headers: { authorization: `Bearer ${customerToken}` },
     });
@@ -1787,21 +1811,523 @@ describe("commerce API", () => {
     });
     expect(r.status).toBe(401);
   });
+  it("calculates customer value and behavioral segments from paid orders only", () => {
+    const user = {
+      id: "customer-metrics",
+      name: "Metrics Customer",
+      email: "metrics@example.com",
+      passwordHash: "unused",
+      role: "CUSTOMER",
+      permissions: [],
+      createdAt: new Date(Date.now() - 200 * 86_400_000).toISOString(),
+    };
+    const order = (
+      id: string,
+      status: string,
+      total: number,
+      ageDays: number,
+      refunded = 0,
+    ) => ({
+      id,
+      number: id,
+      userId: user.id,
+      status,
+      lines: [],
+      subtotal: total,
+      discount: 0,
+      tax: 0,
+      shipping: 0,
+      total,
+      idempotencyKey: id,
+      history: [],
+      createdAt: new Date(Date.now() - ageDays * 86_400_000).toISOString(),
+      payment: refunded
+        ? {
+            refunds: [
+              {
+                id: `refund-${id}`,
+                amount: refunded,
+                status: "SUCCEEDED" as const,
+                reason: "Returned",
+                idempotencyKey: `refund-${id}`,
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          }
+        : null,
+    });
+    const orders = [
+      order("paid-one", "DELIVERED", 6000, 150, 2000),
+      order("paid-two", "PAID", 500, 120),
+      order("pending", "PAYMENT_PENDING", 10000, 1),
+      order("failed", "FAILED", 8000, 2),
+      order("refunded", "REFUNDED", 9000, 3),
+    ];
+    const metrics = customerMetrics(user.id, orders);
+    expect(metrics.orderCount).toBe(5);
+    expect(metrics.totalSpent).toBe(4500);
+    expect(metrics.averageOrderValue).toBe(2250);
+    const segments = customerSegments(user, orders);
+    expect(segments).toContain("REPEAT");
+    expect(segments).toContain("AT_RISK");
+    expect(segments).not.toContain("HIGH_VALUE");
+  });
+  it("provides paginated customer operations and complete details beyond 100 records", async () => {
+    const customer = store.findUser("ananya@example.com")!;
+    const product = [...store.products.values()][0]!;
+    const order =
+      [...store.orders.values()].find((item) => item.userId === customer.id) ||
+      [...store.orders.values()][0]!;
+    expect(order).toBeTruthy();
+    order.userId = customer.id;
+    const createdAt = new Date().toISOString();
+    for (let index = 0; index < 105; index++) {
+      store.returns.set(`bulk-return-${index}`, {
+        id: `bulk-return-${index}`,
+        orderId: order.id,
+        userId: customer.id,
+        reason: `Return reason ${index}`,
+        status: "REQUESTED",
+        createdAt,
+      });
+      store.reviews.set(`bulk-review-${index}`, {
+        id: `bulk-review-${index}`,
+        productId: product.id,
+        userId: customer.id,
+        rating: (index % 5) + 1,
+        body: `Detailed review body ${index}`,
+        verified: true,
+        status: "PENDING",
+        createdAt,
+      });
+      store.supportTickets.set(`bulk-ticket-${index}`, {
+        id: `bulk-ticket-${index}`,
+        number: `SUP-BULK-${index}`,
+        userId: customer.id,
+        subject: `Support request ${index}`,
+        priority: "NORMAL",
+        status: "OPEN",
+        createdAt,
+        messages: [
+          {
+            id: `bulk-message-${index}`,
+            authorId: adminToken,
+            body: index === 104 ? "Private internal note" : `Message ${index}`,
+            internal: index === 104,
+            createdAt,
+          },
+        ],
+      });
+    }
+    const customers = await request(
+      "/api/v1/admin/customers?search=ananya&page=1&limit=1",
+      { headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    expect(customers.status).toBe(200);
+    expect(customers.body.data.items[0].metrics).toMatchObject({ currency: "INR" });
+    expect(customers.body.data.pagination).toMatchObject({ page: 1, limit: 1 });
+    expect(customers.body.data.summary.totalCustomers).toBeGreaterThan(0);
+    const invalidQuery = await request("/api/v1/admin/customers?limit=0", {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(invalidQuery.status).toBe(400);
+    const updatedCustomer = await request(
+      `/api/v1/admin/customers/${customer.id}`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({
+          tags: ["VIP", "vip", "Wholesale"],
+          note: "Prefers weekend delivery",
+          marketingConsent: true,
+        }),
+      },
+    );
+    expect(updatedCustomer.status).toBe(200);
+    expect(updatedCustomer.body.data.tags).toEqual(["VIP", "Wholesale"]);
+    expect(updatedCustomer.body.data).toHaveProperty("orders");
+    expect(updatedCustomer.body.data.retention).toMatchObject({
+      purchaseHistoryOwnerRetainedAfterDeletion: true,
+    });
+    const segments = await request("/api/v1/admin/customer-segments", {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(segments.status).toBe(200);
+    expect(segments.body.data.items.map((item: any) => item.id)).toEqual([
+      "NEW",
+      "REPEAT",
+      "HIGH_VALUE",
+      "AT_RISK",
+    ]);
+
+    const returnDetail = await request("/api/v1/admin/returns/bulk-return-104", {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(returnDetail.status).toBe(200);
+    expect(returnDetail.body.data.order.number).toBe(order.number);
+    expect(returnDetail.body.data.items).toEqual([]);
+    order.status = "RETURN_REQUESTED";
+    const decided = await request("/api/v1/admin/returns/bulk-return-104", {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ status: "APPROVED", notes: "Item inspected" }),
+    });
+    expect(decided.status).toBe(200);
+    expect(decided.body.data).toMatchObject({ status: "APPROVED", itemCount: 0 });
+    expect(decided.body.data).toHaveProperty("customer");
+
+    const reviewDetail = await request("/api/v1/admin/reviews/bulk-review-104", {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(reviewDetail.status).toBe(200);
+    expect(reviewDetail.body.data.product.id).toBe(product.id);
+    const moderated = await request("/api/v1/admin/reviews/bulk-review-104", {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ status: "APPROVED" }),
+    });
+    expect(moderated.status).toBe(200);
+    expect(moderated.body.data.customer.id).toBe(customer.id);
+
+    const supportDetail = await request("/api/v1/admin/support/bulk-ticket-104", {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(supportDetail.status).toBe(200);
+    expect(supportDetail.body.data.messages[0].internal).toBe(true);
+    const internal = await request(
+      "/api/v1/admin/support/bulk-ticket-104/internal-notes",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ message: "Second private note" }),
+      },
+    );
+    expect(internal.status).toBe(201);
+    expect(internal.body.data.messages.some((item: any) => item.internal)).toBe(true);
+    const customerTickets = await request("/api/v1/account/support", {
+      headers: { authorization: `Bearer ${customerToken}` },
+    });
+    const customerTicket = customerTickets.body.data.find(
+      (item: any) => item.id === "bulk-ticket-104",
+    );
+    expect(customerTicket.messages.every((item: any) => !item.internal)).toBe(true);
+    expect(customerTicket).not.toHaveProperty("userId");
+    expect(customerTicket.messages).toEqual([]);
+    const invalidCustomerReply = await request(
+      "/api/v1/account/support/bulk-ticket-104/replies",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${customerToken}` },
+        body: JSON.stringify({ message: "Trying to close it", status: "CLOSED" }),
+      },
+    );
+    expect(invalidCustomerReply.status).toBe(400);
+    const customerReply = await request(
+      "/api/v1/account/support/bulk-ticket-104/replies",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${customerToken}` },
+        body: JSON.stringify({ message: "Customer follow-up" }),
+      },
+    );
+    expect(customerReply.status).toBe(201);
+    expect(customerReply.body.data.messages.every((item: any) => !item.internal)).toBe(true);
+    expect(customerReply.body.data.messages[0]).not.toHaveProperty("authorId");
+    expect(customerReply.body.data.messages[0]).not.toHaveProperty("internal");
+    const supportUpdated = await request("/api/v1/admin/support/bulk-ticket-104", {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ status: "RESOLVED", priority: "HIGH" }),
+    });
+    expect(supportUpdated.status).toBe(200);
+    expect(supportUpdated.body.data).toMatchObject({
+      status: "RESOLVED",
+      priority: "HIGH",
+    });
+    expect(supportUpdated.body.data.messages.length).toBeGreaterThan(1);
+  });
+  it("persists selected return items and keeps partial return refunds currency-safe", async () => {
+    const customer = store.findUser("ananya@example.com")!;
+    const product = store.listProducts()[0]!;
+    const variant = product.variants[0]!;
+    const order = store.createOrder({
+      userId: customer.id,
+      status: "DELIVERED",
+      lines: [
+        {
+          variantId: variant.id,
+          name: product.name,
+          sku: variant.sku,
+          quantity: 2,
+          unitPrice: 100,
+          tax: 0,
+        },
+      ],
+      subtotal: 200,
+      tax: 0,
+      shipping: 0,
+      discount: 0,
+      total: 200,
+      idempotencyKey: `return-lifecycle.${crypto.randomUUID()}`,
+      payment: {
+        provider: "development",
+        externalId: `pay_${crypto.randomUUID()}`,
+        status: "CAPTURED",
+        amount: 200,
+        currency: "INR",
+        refunds: [],
+      },
+    });
+    const duplicateSelection = await request("/api/v1/account/returns", {
+      method: "POST",
+      headers: { authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({
+        orderId: order.id,
+        reason: "Both entries duplicate the same purchased variant",
+        items: [
+          { variantId: variant.id, quantity: 1 },
+          { variantId: variant.id, quantity: 1 },
+        ],
+      }),
+    });
+    expect(duplicateSelection.status).toBe(400);
+    const excessiveSelection = await request("/api/v1/account/returns", {
+      method: "POST",
+      headers: { authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({
+        orderId: order.id,
+        reason: "Quantity is greater than the purchased quantity",
+        items: [{ variantId: variant.id, quantity: 3 }],
+      }),
+    });
+    expect(excessiveSelection.status).toBe(422);
+    const selected = await request("/api/v1/account/returns", {
+      method: "POST",
+      headers: { authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({
+        orderId: order.id,
+        reason: "One unit arrived with a visible defect",
+        items: [{ variantId: variant.id, quantity: 1 }],
+      }),
+    });
+    expect(selected.status).toBe(201);
+    expect(selected.body.data.items).toHaveLength(1);
+    expect(selected.body.data.items[0]).toMatchObject({
+      variantId: variant.id,
+      quantity: 1,
+    });
+    expect(order.status).toBe("RETURN_REQUESTED");
+    const rejected = await request(
+      `/api/v1/admin/returns/${selected.body.data.id}`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ status: "REJECTED", notes: "Not eligible" }),
+      },
+    );
+    expect(rejected.status).toBe(200);
+    expect(order.status).toBe("DELIVERED");
+
+    const allItems = await request("/api/v1/account/returns", {
+      method: "POST",
+      headers: { authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({
+        orderId: order.id,
+        reason: "The complete delivered line is now being returned",
+      }),
+    });
+    expect(allItems.status).toBe(201);
+    expect(allItems.body.data.items[0].quantity).toBe(2);
+    const approved = await request(
+      `/api/v1/admin/returns/${allItems.body.data.id}`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ status: "APPROVED", notes: "Approved" }),
+      },
+    );
+    expect(approved.status).toBe(200);
+    expect(order.status).toBe("RETURN_APPROVED");
+    const received = await request(
+      `/api/v1/admin/returns/${allItems.body.data.id}`,
+      {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ status: "RECEIVED", notes: "Warehouse received" }),
+      },
+    );
+    expect(received.status).toBe(200);
+    expect(received.body.data.status).toBe("RECEIVED");
+    expect(received.body.data.order.status).toBe("RETURNED");
+    expect(store.returns.get(allItems.body.data.id)?.status).toBe("RECEIVED");
+    const refunded = await request(`/api/v1/admin/orders/${order.id}/refunds`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+        "idempotency-key": `return-refund-${crypto.randomUUID()}`,
+      },
+      body: JSON.stringify({
+        amount: 100,
+        reason: "Refund for the returned line",
+        returnRequestId: allItems.body.data.id,
+      }),
+    });
+    expect(refunded.status).toBe(201);
+    expect(refunded.body.data.payment.status).toBe("PARTIALLY_REFUNDED");
+    expect(order.status).toBe("RETURNED");
+    expect(store.returns.get(allItems.body.data.id)?.status).toBe("REFUNDED");
+    const detail = await request(
+      `/api/v1/admin/returns/${allItems.body.data.id}`,
+      { headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    expect(detail.body.data.refund).toMatchObject({
+      amount: 100,
+      currency: "INR",
+      status: "SUCCEEDED",
+    });
+  });
+  it("invalidates every customer session version when an account is disabled", async () => {
+    const registered = await request("/api/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Disable Test",
+        email: "disable.test@example.com",
+        password: "StrongPass!55",
+      }),
+    });
+    const customer = store.users.get(registered.body.data.id)!;
+    customer.mobile = "+919811112222";
+    const login = await request("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        email: customer.email,
+        password: "StrongPass!55",
+      }),
+    });
+    const oldToken = login.body.data.accessToken;
+    const oldCookie = login.headers.get("set-cookie")!.split(";")[0]!;
+    const disabled = await request(`/api/v1/admin/customers/${customer.id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ accountStatus: "DISABLED" }),
+    });
+    expect(disabled.status).toBe(200);
+    expect(disabled.body.data.accountStatus).toBe("DISABLED");
+    expect(
+      (
+        await request("/api/v1/account/addresses", {
+          headers: { authorization: `Bearer ${oldToken}` },
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await request("/api/v1/auth/refresh", {
+          method: "POST",
+          headers: { cookie: oldCookie },
+        })
+      ).status,
+    ).toBe(401);
+    const blockedPassword = await request("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        email: customer.email,
+        password: "StrongPass!55",
+      }),
+    });
+    expect(blockedPassword.status).toBe(403);
+    const otp = await request("/api/v1/auth/mobile/request", {
+      method: "POST",
+      body: JSON.stringify({ mobile: customer.mobile }),
+    });
+    const blockedMobile = await request("/api/v1/auth/mobile/verify", {
+      method: "POST",
+      body: JSON.stringify({
+        mobile: customer.mobile,
+        code: otp.body.data.developmentCode,
+      }),
+    });
+    expect(blockedMobile.status).toBe(403);
+
+    const googleCustomer = store.findUser("google.customer@example.com")!;
+    await request(`/api/v1/admin/customers/${googleCustomer.id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ accountStatus: "DISABLED" }),
+    });
+    const blockedGoogle = await request("/api/v1/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ credential: "x".repeat(120) }),
+    });
+    expect(blockedGoogle.status).toBe(403);
+    await request(`/api/v1/admin/customers/${googleCustomer.id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ accountStatus: "ACTIVE" }),
+    });
+
+    const enabled = await request(`/api/v1/admin/customers/${customer.id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ accountStatus: "ACTIVE" }),
+    });
+    expect(enabled.body.data.accountStatus).toBe("ACTIVE");
+    expect(
+      (
+        await request("/api/v1/account/addresses", {
+          headers: { authorization: `Bearer ${oldToken}` },
+        })
+      ).status,
+    ).toBe(401);
+    const relogin = await request("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        email: customer.email,
+        password: "StrongPass!55",
+      }),
+    });
+    expect(relogin.status).toBe(200);
+    expect(
+      (
+        await request("/api/v1/account/addresses", {
+          headers: { authorization: `Bearer ${relogin.body.data.accessToken}` },
+        })
+      ).status,
+    ).toBe(200);
+  });
   it("deletes the customer identity while retaining detached owner order records", async () => {
     const customer = store.findUser("ananya@example.com")!;
     const ownedOrders = [...store.orders.values()].filter(
       (order) => order.userId === customer.id,
     );
+    const retainedReturn = [...store.returns.values()].find(
+      (item) => item.userId === customer.id,
+    )!;
+    retainedReturn.notes = "Customer-provided personal return note";
+    const customerTicketIds = [...store.supportTickets.values()]
+      .filter((ticket) => ticket.userId === customer.id)
+      .map((ticket) => ticket.id);
+    expect(retainedReturn).toBeTruthy();
+    expect(customerTicketIds.length).toBeGreaterThan(0);
     const wrong = await request("/api/v1/account", {
       method: "DELETE",
       headers: { authorization: `Bearer ${customerToken}` },
       body: JSON.stringify({ confirmation: "delete" }),
     });
     expect(wrong.status).toBe(400);
-    const deleted = await request("/api/v1/account", {
+    const withoutReauthentication = await request("/api/v1/account", {
       method: "DELETE",
       headers: { authorization: `Bearer ${customerToken}` },
       body: JSON.stringify({ confirmation: "DELETE" }),
+    });
+    expect(withoutReauthentication.status).toBe(401);
+    const deleted = await request("/api/v1/account", {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({
+        confirmation: "DELETE",
+        password: "StrongPass!44",
+      }),
     });
     expect(deleted.status).toBe(200);
     expect(deleted.body.data.retainedOrders).toBe(ownedOrders.length);
@@ -1811,9 +2337,17 @@ describe("commerce API", () => {
         (order) => store.orders.get(order.id)?.userId === undefined,
       ),
     ).toBe(true);
+    expect(retainedReturn).toMatchObject({
+      userId: undefined,
+      reason: "Personal details removed",
+      notes: undefined,
+    });
+    expect(
+      customerTicketIds.every((id) => !store.supportTickets.has(id)),
+    ).toBe(true);
     const account = await request("/api/v1/auth/me", {
       headers: { authorization: `Bearer ${customerToken}` },
     });
-    expect(account.status).toBe(404);
+    expect(account.status).toBe(401);
   });
 });

@@ -2,7 +2,12 @@ import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import type { RequestHandler } from "express";
 import { AppError } from "./errors.js";
-export type Principal = { sub: string; role: string; permissions: string[] };
+export type Principal = {
+  sub: string;
+  role: string;
+  permissions: string[];
+  authVersion?: number;
+};
 declare global {
   namespace Express {
     interface Request {

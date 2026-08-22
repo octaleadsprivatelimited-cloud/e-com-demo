@@ -11,6 +11,14 @@ export type StoredUser = {
   permissions: string[];
   totpSecretEncrypted?: string;
   totpEnabled?: boolean;
+  tags?: string[];
+  note?: string;
+  marketingConsent?: boolean;
+  marketingConsentUpdatedAt?: string;
+  disabledAt?: string;
+  authVersion?: number;
+  createdAt?: string;
+  updatedAt?: string;
 };
 export type StoredVariant = {
   id: string;
@@ -54,6 +62,7 @@ export type StoredShippingSelection = {
 };
 export type StoredRefund = {
   id: string;
+  returnRequestId?: string;
   amount: number;
   status: "PENDING" | "SUCCEEDED" | "FAILED";
   reason: string;
@@ -177,13 +186,24 @@ export class CommerceStore {
       orderId: string;
       userId?: string;
       reason: string;
+      notes?: string;
       status: string;
       createdAt: string;
+      updatedAt?: string;
+      items?: Array<{
+        id: string;
+        orderItemId?: string;
+        variantId: string;
+        name: string;
+        sku: string;
+        quantity: number;
+        condition?: string;
+      }>;
     }
   >();
   addresses = new Map<string, Array<Record<string, unknown>>>();
   reviews = new Map<string, { id: string; productId: string; userId: string; rating: number; title?: string; body: string; verified: boolean; status: string; createdAt: string }>();
-  supportTickets = new Map<string, { id: string; number: string; userId: string; subject: string; priority: string; status: string; createdAt: string; messages: Array<{ id: string; authorId?: string; body: string; internal: boolean; createdAt: string }> }>();
+  supportTickets = new Map<string, { id: string; number: string; userId?: string; subject: string; priority: string; status: string; createdAt: string; updatedAt?: string; messages: Array<{ id: string; authorId?: string; body: string; internal: boolean; createdAt: string }> }>();
   inventoryMovements = new Map<
     string,
     Array<{
@@ -209,7 +229,15 @@ export class CommerceStore {
         "EMAIL_EXISTS",
         "An account already exists for this email",
       );
-    const user = { ...input, id: crypto.randomUUID() };
+    const now = new Date().toISOString();
+    const user = {
+      ...input,
+      tags: input.tags || [],
+      marketingConsent: input.marketingConsent || false,
+      createdAt: input.createdAt || now,
+      updatedAt: input.updatedAt || now,
+      id: crypto.randomUUID(),
+    };
     this.users.set(user.id, user);
     return user;
   }
@@ -341,11 +369,28 @@ export class CommerceStore {
     if (!order) throw new AppError(404, "ORDER_NOT_FOUND", "Order not found");
     assertOrderTransition(order.status, to);
     const from = order.status;
+    const receivedReturn =
+      from === "RETURN_APPROVED" && to === "RETURNED"
+        ? [...this.returns.values()].find(
+            (item) => item.orderId === id && item.status === "APPROVED",
+          )
+        : undefined;
+    if (from === "RETURN_APPROVED" && to === "RETURNED" && !receivedReturn)
+      throw new AppError(
+        409,
+        "RETURN_REQUEST_MISSING",
+        "An approved return request is required before receiving a return",
+      );
+    const changedAt = new Date().toISOString();
     order.status = to;
+    if (receivedReturn) {
+      receivedReturn.status = "RECEIVED";
+      receivedReturn.updatedAt = changedAt;
+    }
     order.history.push({
       from,
       to,
-      at: new Date().toISOString(),
+      at: changedAt,
       actor,
       source,
     });
@@ -358,7 +403,7 @@ export class CommerceStore {
       source,
       before: { status: from },
       after: { status: to },
-      createdAt: new Date().toISOString(),
+      createdAt: changedAt,
     });
     return order;
   }
@@ -367,6 +412,8 @@ export class CommerceStore {
     amount: number,
     idempotencyKey: string,
     reason: string,
+    actor?: string,
+    requestedReturnId?: string,
   ) {
     if (!Number.isFinite(amount) || amount <= 0)
       throw new AppError(
@@ -388,7 +435,12 @@ export class CommerceStore {
       (refund) => refund.idempotencyKey === idempotencyKey,
     );
     if (existing) {
-      if (existing.amount !== amount || existing.reason !== reason)
+      if (
+        existing.amount !== amount ||
+        existing.reason !== reason ||
+        (requestedReturnId !== undefined &&
+          existing.returnRequestId !== requestedReturnId)
+      )
         throw new AppError(
           409,
           "IDEMPOTENCY_CONFLICT",
@@ -402,7 +454,9 @@ export class CommerceStore {
           provider: payment.provider || "development",
           externalId: payment.externalId,
         };
-      if (existing.status === "PENDING")
+      if (existing.status === "PENDING") {
+        if (existing.returnRequestId && order.status === "RETURNED")
+          this.transitionOrder(order.id, "REFUND_PENDING", actor, "REFUND");
         return {
           duplicate: true,
           process: true,
@@ -410,7 +464,37 @@ export class CommerceStore {
           provider: payment.provider || "development",
           externalId: payment.externalId,
         };
+      }
     }
+    const linkedReturn = existing?.returnRequestId
+      ? this.returns.get(existing.returnRequestId)
+      : requestedReturnId
+        ? this.returns.get(requestedReturnId)
+      : [...this.returns.values()].find(
+          (item) => item.orderId === orderId && item.status === "RECEIVED",
+        );
+    if (
+      requestedReturnId &&
+      (!linkedReturn ||
+        linkedReturn.orderId !== orderId ||
+        linkedReturn.status !== "RECEIVED")
+    )
+      throw new AppError(
+        409,
+        "RETURN_NOT_RECEIVED",
+        "The selected return is not received and ready for refund",
+      );
+    if (
+      !linkedReturn &&
+      [...this.returns.values()].some(
+        (item) => item.orderId === orderId && item.status === "APPROVED",
+      )
+    )
+      throw new AppError(
+        409,
+        "RETURN_NOT_RECEIVED",
+        "Mark the approved return as received before starting its refund",
+      );
     if (!["CAPTURED", "PARTIALLY_REFUNDED"].includes(payment.status || ""))
       throw new AppError(
         409,
@@ -429,14 +513,20 @@ export class CommerceStore {
       );
     const refund: StoredRefund = existing || {
       id: crypto.randomUUID(),
+      returnRequestId: linkedReturn?.id,
       amount,
       status: "PENDING",
       reason,
       idempotencyKey,
       createdAt: new Date().toISOString(),
     };
-    if (existing) existing.status = "PENDING";
+    if (existing) {
+      existing.status = "PENDING";
+      existing.returnRequestId ||= linkedReturn?.id;
+    }
     else payment.refunds.push(refund);
+    if (refund.returnRequestId && order.status === "RETURNED")
+      this.transitionOrder(order.id, "REFUND_PENDING", actor, "REFUND");
     return {
       duplicate: Boolean(existing),
       process: true,
@@ -476,6 +566,20 @@ export class CommerceStore {
       payment.refundedAmount >= capturedAmount
         ? "REFUNDED"
         : "PARTIALLY_REFUNDED";
+    if (refund.returnRequestId) {
+      const linkedReturn = this.returns.get(refund.returnRequestId);
+      if (linkedReturn) {
+        linkedReturn.status = "REFUNDED";
+        linkedReturn.updatedAt = new Date().toISOString();
+      }
+      if (order.status === "REFUND_PENDING")
+        this.transitionOrder(
+          order.id,
+          payment.status === "REFUNDED" ? "REFUNDED" : "RETURNED",
+          actor,
+          "REFUND",
+        );
+    }
     this.auditLogs.unshift({
       id: crypto.randomUUID(),
       action: "payment.refunded",
@@ -493,10 +597,13 @@ export class CommerceStore {
     return refund;
   }
   failRefund(orderId: string, refundId: string) {
-    const refund = this.orders
-      .get(orderId)
-      ?.payment?.refunds?.find((item) => item.id === refundId);
-    if (refund?.status === "PENDING") refund.status = "FAILED";
+    const order = this.orders.get(orderId);
+    const refund = order?.payment?.refunds?.find((item) => item.id === refundId);
+    if (refund?.status === "PENDING") {
+      refund.status = "FAILED";
+      if (refund.returnRequestId && order?.status === "REFUND_PENDING")
+        this.transitionOrder(order.id, "RETURNED", undefined, "REFUND");
+    }
   }
   reserveMany(lines: Array<{ variantId: string; quantity: number }>) {
     const totals = new Map<string, number>();

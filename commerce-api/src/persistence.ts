@@ -13,6 +13,15 @@ import type {
   StoredProduct,
   StoredUser,
 } from "./store.js";
+import {
+  adminCustomerDto,
+  customerSegmentDefinitions,
+  listAdminCustomers,
+  listCustomerSegments,
+  normalizeCustomerTags,
+  pagination,
+  type AdminCustomerQuery,
+} from "./admin-customer-operations.js";
 
 const number = (value: Prisma.Decimal | number) => Number(value);
 const hash = (value: string) =>
@@ -183,7 +192,15 @@ export class PrismaPersistence {
       this.db.integrationConfig.findMany(),
       this.db.cart.findMany({ include: { items: true } }),
       this.db.wishlistItem.findMany(),
-      this.db.returnRequest.findMany(),
+      this.db.returnRequest.findMany({
+        include: {
+          items: {
+            include: {
+              orderItem: { select: { variantId: true, name: true, sku: true } },
+            },
+          },
+        },
+      }),
     ]);
     for (const user of users) {
       const permissions = [
@@ -205,6 +222,15 @@ export class PrismaPersistence {
         totpSecretEncrypted: user.totpSecret
           ? Buffer.from(user.totpSecret).toString("base64")
           : undefined,
+        tags: user.tags,
+        note: user.note || undefined,
+        marketingConsent: user.marketingConsent,
+        marketingConsentUpdatedAt:
+          user.marketingConsentUpdatedAt?.toISOString(),
+        disabledAt: user.disabledAt?.toISOString(),
+        authVersion: user.authVersion,
+        createdAt: user.createdAt.toISOString(),
+        updatedAt: user.updatedAt.toISOString(),
       });
     }
     for (const product of products) {
@@ -298,28 +324,52 @@ export class PrismaPersistence {
         orderId: request.orderId,
         userId: request.userId || undefined,
         reason: request.reason,
+        notes: request.notes || undefined,
         status: request.status,
         createdAt: request.createdAt.toISOString(),
+        updatedAt: request.updatedAt.toISOString(),
+        items: request.items.map((item) => ({
+          id: item.id,
+          orderItemId: item.orderItemId,
+          variantId: item.orderItem.variantId,
+          name: item.orderItem.name,
+          sku: item.orderItem.sku,
+          quantity: item.quantity,
+          condition: item.condition || undefined,
+        })),
       });
   }
 
   async saveUser(user: StoredUser) {
-    await this.db.user.create({
-      data: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        mobile: user.mobile,
-        passwordHash: user.passwordHash,
-        role: user.role as UserRole,
-      },
-    });
+    try {
+      await this.db.user.create({
+        data: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          mobile: user.mobile,
+          passwordHash: user.passwordHash,
+          role: user.role as UserRole,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      )
+        throw new AppError(
+          409,
+          "EMAIL_EXISTS",
+          "An account already exists for this email or mobile number",
+        );
+      throw error;
+    }
   }
   async deleteCustomerAccount(userId: string) {
     return this.db.$transaction(async (tx) => {
       const user = await tx.user.findUnique({
         where: { id: userId },
-        select: { role: true },
+        select: { role: true, email: true, mobile: true },
       });
       if (!user)
         throw new AppError(404, "ACCOUNT_NOT_FOUND", "Account not found");
@@ -346,6 +396,28 @@ export class PrismaPersistence {
             },
           },
         });
+      await tx.supportTicket.deleteMany({ where: { userId } });
+      await tx.notification.deleteMany({
+        where: {
+          OR: [
+            { userId },
+            {
+              userId: null,
+              destination: {
+                in: [user.email, ...(user.mobile ? [user.mobile] : [])],
+              },
+            },
+          ],
+        },
+      });
+      await tx.returnRequest.updateMany({
+        where: { userId },
+        data: {
+          userId: null,
+          reason: "Personal details removed",
+          notes: null,
+        },
+      });
       await tx.auditLog.create({
         data: {
           userId,
@@ -610,6 +682,87 @@ export class PrismaPersistence {
     });
   }
 
+  async getCustomerAccountState(userId: string) {
+    const user = await this.db.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        mobile: true,
+        passwordHash: true,
+        role: true,
+        disabledAt: true,
+        authVersion: true,
+      },
+    });
+    return user
+      ? {
+          exists: true,
+          customer: user.role === "CUSTOMER",
+          disabled: Boolean(user.disabledAt),
+          disabledAt: user.disabledAt,
+          authVersion: user.authVersion,
+          user,
+        }
+      : {
+          exists: false,
+          customer: false,
+          disabled: true,
+          disabledAt: null,
+          authVersion: -1,
+          user: null,
+        };
+  }
+
+  async findAuthUser(input: { email?: string; mobile?: string }) {
+    if (!input.email && !input.mobile) return null;
+    const user = await this.db.user.findFirst({
+      where: input.email
+        ? { email: { equals: input.email, mode: "insensitive" } }
+        : { mobile: input.mobile },
+      include: {
+        roleAssignments: {
+          include: {
+            role: {
+              include: { permissions: { include: { permission: true } } },
+            },
+          },
+        },
+      },
+    });
+    if (!user) return null;
+    const permissions = [
+      ...new Set(
+        user.roleAssignments.flatMap((assignment) =>
+          assignment.role.permissions.map((entry) => entry.permission.key),
+        ),
+      ),
+    ];
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      mobile: user.mobile || undefined,
+      passwordHash: user.passwordHash,
+      role: user.role,
+      permissions,
+      totpEnabled: user.totpEnabled,
+      totpSecretEncrypted: user.totpSecret
+        ? Buffer.from(user.totpSecret).toString("base64")
+        : undefined,
+      tags: user.tags,
+      note: user.note || undefined,
+      marketingConsent: user.marketingConsent,
+      marketingConsentUpdatedAt:
+        user.marketingConsentUpdatedAt?.toISOString(),
+      disabledAt: user.disabledAt?.toISOString(),
+      authVersion: user.authVersion,
+      createdAt: user.createdAt.toISOString(),
+      updatedAt: user.updatedAt.toISOString(),
+    } satisfies StoredUser;
+  }
+
   async reorderProductMedia(productId: string, mediaIds: string[]) {
     await this.db.$transaction(async (tx) => {
       for (const [position, id] of mediaIds.entries())
@@ -828,19 +981,44 @@ export class PrismaPersistence {
         body: true,
         verified: true,
         createdAt: true,
-        user: { select: { name: true } },
       },
       orderBy: { createdAt: "desc" },
-    });
+      take: 100,
+    }).then((reviews) =>
+      reviews.map((review) => ({
+        ...review,
+        user: { name: review.verified ? "Verified customer" : "Customer" },
+      })),
+    );
   }
   async saveReview(
     userId: string,
     input: { productId: string; rating: number; title?: string; body: string },
-    verified: boolean,
   ) {
     try {
-      return await this.db.review.create({
-        data: { userId, ...input, verified, status: "PENDING" },
+      return await this.db.$transaction(async (tx) => {
+        const product = await tx.product.findFirst({
+          where: { id: input.productId, deletedAt: null },
+          select: { id: true },
+        });
+        if (!product)
+          throw new AppError(404, "PRODUCT_NOT_FOUND", "Product not found");
+        const verifiedPurchase = await tx.order.findFirst({
+          where: {
+            userId,
+            status: "DELIVERED",
+            items: { some: { variant: { productId: input.productId } } },
+          },
+          select: { id: true },
+        });
+        return tx.review.create({
+          data: {
+            userId,
+            ...input,
+            verified: Boolean(verifiedPurchase),
+            status: "PENDING",
+          },
+        });
       });
     } catch (error) {
       if (
@@ -995,8 +1173,410 @@ export class PrismaPersistence {
         },
       },
       orderBy: { createdAt: "desc" },
+      take: 100,
     });
   }
+
+  async listAdminCustomersPage(input: AdminCustomerQuery) {
+    const searchedConditions: Prisma.Sql[] = [];
+    if (input.search)
+      searchedConditions.push(Prisma.sql`
+        CONCAT_WS(' ', m."name", m."email", COALESCE(m."mobile", ''),
+          ARRAY_TO_STRING(m."tags", ' ')) ILIKE ${`%${input.search}%`}
+      `);
+    const conditions = [...searchedConditions];
+    if (input.status)
+      conditions.push(
+        input.status === "ACTIVE"
+          ? Prisma.sql`m."disabledAt" IS NULL`
+          : Prisma.sql`m."disabledAt" IS NOT NULL`,
+      );
+    if (input.marketing)
+      conditions.push(
+        input.marketing === "SUBSCRIBED"
+          ? Prisma.sql`m."marketingConsent" = true`
+          : Prisma.sql`m."marketingConsent" = false`,
+      );
+    if (input.tag)
+      conditions.push(Prisma.sql`
+        EXISTS (
+          SELECT 1 FROM UNNEST(m."tags") tag
+          WHERE LOWER(tag) = LOWER(${input.tag})
+        )
+      `);
+    if (input.segment === "NEW")
+      conditions.push(Prisma.sql`m."createdAt" >= NOW() - INTERVAL '30 days'`);
+    if (input.segment === "REPEAT")
+      conditions.push(Prisma.sql`m."paidOrderCount" >= 2`);
+    if (input.segment === "HIGH_VALUE")
+      conditions.push(Prisma.sql`m."totalSpent" >= 5000`);
+    if (input.segment === "AT_RISK")
+      conditions.push(Prisma.sql`
+        m."paidOrderCount" > 0 AND
+          m."lastPaidOrderAt" < NOW() - INTERVAL '90 days'
+      `);
+    const where = conditions.length
+      ? Prisma.join(conditions, " AND ")
+      : Prisma.sql`TRUE`;
+    const searchedWhere = searchedConditions.length
+      ? Prisma.join(searchedConditions, " AND ")
+      : Prisma.sql`TRUE`;
+    const sortColumn: Record<NonNullable<AdminCustomerQuery["sortBy"]>, Prisma.Sql> = {
+      createdAt: Prisma.sql`m."createdAt"`,
+      name: Prisma.sql`LOWER(m."name")`,
+      orders: Prisma.sql`m."orderCount"`,
+      spent: Prisma.sql`m."totalSpent"`,
+      lastOrderAt: Prisma.sql`m."lastOrderAt"`,
+    };
+    const orderDirection =
+      input.sortOrder === "asc" ? Prisma.sql`ASC` : Prisma.sql`DESC`;
+    type CountRow = { count: number };
+    type SummaryRow = {
+      totalCustomers: number;
+      activeCustomers: number;
+      disabledCustomers: number;
+      subscribedCustomers: number;
+      totalSpent: Prisma.Decimal;
+      spendByCurrency: Prisma.JsonValue;
+    };
+    type FacetRow = { facet: string; value: string; count: number };
+    const [rows, countRows, summaryRows, facetRows] = await Promise.all([
+      this.db.$queryRaw<PersistentCustomerRow[]>(Prisma.sql`
+        WITH customer_metrics AS (${customerMetricsSql})
+        SELECT m.* FROM customer_metrics m
+        WHERE ${where}
+        ORDER BY ${sortColumn[input.sortBy || "createdAt"]} ${orderDirection}
+          NULLS LAST, m."id" ASC
+        LIMIT ${input.limit} OFFSET ${(input.page - 1) * input.limit}
+      `),
+      this.db.$queryRaw<CountRow[]>(Prisma.sql`
+        WITH customer_metrics AS (${customerMetricsSql})
+        SELECT COUNT(*)::integer AS "count" FROM customer_metrics m
+        WHERE ${where}
+      `),
+      this.db.$queryRaw<SummaryRow[]>(Prisma.sql`
+        WITH customer_metrics AS (${customerMetricsSql})
+        SELECT
+          COUNT(*)::integer AS "totalCustomers",
+          COUNT(*) FILTER (WHERE m."disabledAt" IS NULL)::integer AS "activeCustomers",
+          COUNT(*) FILTER (WHERE m."disabledAt" IS NOT NULL)::integer AS "disabledCustomers",
+          COUNT(*) FILTER (WHERE m."marketingConsent")::integer AS "subscribedCustomers",
+          COALESCE(SUM(m."totalSpent"), 0) AS "totalSpent",
+          COALESCE((
+            SELECT JSONB_AGG(JSONB_BUILD_OBJECT(
+              'currency', totals.currency,
+              'totalSpent', totals."totalSpent"
+            ) ORDER BY totals.currency)
+            FROM (
+              SELECT o."currency" AS currency,
+                SUM(GREATEST(o."total" - COALESCE((
+                  SELECT SUM(r."amount") FROM "Refund" r
+                  INNER JOIN "Payment" p ON p."id" = r."paymentId"
+                  WHERE p."orderId" = o."id" AND r."status" = 'SUCCEEDED'
+                ), 0), 0)) AS "totalSpent"
+              FROM "Order" o
+              INNER JOIN "User" customer ON customer."id" = o."userId"
+              WHERE o."status"::text IN (
+                'PAID', 'CONFIRMED', 'PROCESSING', 'PACKED', 'SHIPPED',
+                'OUT_FOR_DELIVERY', 'DELIVERED', 'RETURN_REQUESTED',
+                'RETURN_APPROVED', 'RETURNED', 'REFUND_PENDING'
+              )
+                AND customer."role"::text = 'CUSTOMER'
+              GROUP BY o."currency"
+            ) totals
+          ), '[]'::jsonb) AS "spendByCurrency"
+        FROM customer_metrics m
+      `),
+      this.db.$queryRaw<FacetRow[]>(Prisma.sql`
+        WITH customer_metrics AS (${customerMetricsSql}),
+        searched AS (SELECT * FROM customer_metrics m WHERE ${searchedWhere})
+        SELECT 'statuses' AS facet,
+          CASE WHEN s."disabledAt" IS NULL THEN 'ACTIVE' ELSE 'DISABLED' END AS value,
+          COUNT(*)::integer AS count
+        FROM searched s GROUP BY value
+        UNION ALL
+        SELECT 'marketing',
+          CASE WHEN s."marketingConsent" THEN 'SUBSCRIBED' ELSE 'NOT_SUBSCRIBED' END,
+          COUNT(*)::integer
+        FROM searched s GROUP BY 2
+        UNION ALL
+        SELECT 'tags', tag, COUNT(*)::integer
+        FROM searched s CROSS JOIN LATERAL UNNEST(s."tags") tag GROUP BY tag
+        UNION ALL
+        SELECT 'segments', 'NEW',
+          COUNT(*) FILTER (WHERE s."createdAt" >= NOW() - INTERVAL '30 days')::integer
+        FROM searched s
+        UNION ALL
+        SELECT 'segments', 'REPEAT',
+          COUNT(*) FILTER (WHERE s."paidOrderCount" >= 2)::integer FROM searched s
+        UNION ALL
+        SELECT 'segments', 'HIGH_VALUE',
+          COUNT(*) FILTER (WHERE s."totalSpent" >= 5000)::integer FROM searched s
+        UNION ALL
+        SELECT 'segments', 'AT_RISK',
+          COUNT(*) FILTER (WHERE s."paidOrderCount" > 0 AND
+            s."lastPaidOrderAt" < NOW() - INTERVAL '90 days')::integer FROM searched s
+        ORDER BY facet, value
+      `),
+    ]);
+    const facets: Record<string, Array<{ value: string; count: number }>> = {
+      statuses: [],
+      marketing: [],
+      tags: [],
+      segments: [],
+    };
+    for (const facet of facetRows)
+      facets[facet.facet]?.push({ value: facet.value, count: facet.count });
+    const total = countRows[0]?.count || 0;
+    const summary = summaryRows[0];
+    return {
+      items: rows.map(persistentCustomerDto),
+      pagination: pagination(input.page, input.limit, total),
+      summary: {
+        totalCustomers: summary?.totalCustomers || 0,
+        activeCustomers: summary?.activeCustomers || 0,
+        disabledCustomers: summary?.disabledCustomers || 0,
+        subscribedCustomers: summary?.subscribedCustomers || 0,
+        totalSpent: summary ? number(summary.totalSpent) : 0,
+        currency: "INR" as const,
+        spendByCurrency: Array.isArray(summary?.spendByCurrency)
+          ? summary.spendByCurrency
+          : [],
+      },
+      facets,
+    };
+  }
+
+  async listAdminCustomerSegments() {
+    const rows = await this.db.$queryRaw<Array<{ id: string; count: number }>>(
+      Prisma.sql`
+        WITH customer_metrics AS (${customerMetricsSql})
+        SELECT 'NEW' AS id,
+          COUNT(*) FILTER (WHERE "createdAt" >= NOW() - INTERVAL '30 days')::integer AS count
+        FROM customer_metrics
+        UNION ALL SELECT 'REPEAT', COUNT(*) FILTER (WHERE "paidOrderCount" >= 2)::integer
+          FROM customer_metrics
+        UNION ALL SELECT 'HIGH_VALUE', COUNT(*) FILTER (WHERE "totalSpent" >= 5000)::integer
+          FROM customer_metrics
+        UNION ALL SELECT 'AT_RISK', COUNT(*) FILTER (WHERE "paidOrderCount" > 0 AND
+          "lastPaidOrderAt" < NOW() - INTERVAL '90 days')::integer FROM customer_metrics
+      `,
+    );
+    const counts = new Map(rows.map((row) => [row.id, row.count]));
+    return {
+      items: customerSegmentDefinitions.map((definition) => ({
+        ...definition,
+        count: counts.get(definition.id) || 0,
+      })),
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  async getAdminCustomerDetail(id: string) {
+    const user = await this.db.user.findFirst({
+      where: { id, role: "CUSTOMER" },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        mobile: true,
+        passwordHash: true,
+        role: true,
+        tags: true,
+        note: true,
+        marketingConsent: true,
+        marketingConsentUpdatedAt: true,
+        disabledAt: true,
+        authVersion: true,
+        createdAt: true,
+        updatedAt: true,
+        addresses: {
+          orderBy: [{ isDefault: "desc" }, { id: "asc" }],
+          take: 50,
+        },
+        orders: {
+          select: {
+            id: true,
+            number: true,
+            status: true,
+            currency: true,
+            subtotal: true,
+            discount: true,
+            tax: true,
+            shipping: true,
+            total: true,
+            idempotencyKey: true,
+            createdAt: true,
+            items: { select: { quantity: true } },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 100,
+        },
+        reviews: {
+          select: {
+            id: true,
+            productId: true,
+            rating: true,
+            status: true,
+            verified: true,
+            createdAt: true,
+            product: { select: { name: true } },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 50,
+        },
+        returnRequests: {
+          select: {
+            id: true,
+            orderId: true,
+            status: true,
+            reason: true,
+            createdAt: true,
+            order: { select: { number: true } },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 50,
+        },
+        supportTickets: {
+          select: {
+            id: true,
+            number: true,
+            subject: true,
+            status: true,
+            priority: true,
+            updatedAt: true,
+          },
+          orderBy: { updatedAt: "desc" },
+          take: 50,
+        },
+        _count: {
+          select: {
+            orders: true,
+            reviews: true,
+            returnRequests: true,
+            supportTickets: true,
+            addresses: true,
+          },
+        },
+      },
+    });
+    if (!user)
+      throw new AppError(404, "CUSTOMER_NOT_FOUND", "Customer not found");
+    const metricRows = await this.db.$queryRaw<PersistentCustomerRow[]>(
+      Prisma.sql`
+        WITH customer_metrics AS (${customerMetricsSql})
+        SELECT m.* FROM customer_metrics m WHERE m."id" = ${id}
+      `,
+    );
+    const profile = metricRows[0];
+    if (!profile)
+      throw new AppError(404, "CUSTOMER_NOT_FOUND", "Customer not found");
+    return {
+      ...persistentCustomerDto(profile),
+      note: user.note || null,
+      addresses: user.addresses,
+      orders: user.orders.map((order) => ({
+        id: order.id,
+        number: order.number,
+        status: order.status,
+        total: number(order.total),
+        currency: order.currency,
+        itemCount: order.items.reduce((sum, item) => sum + item.quantity, 0),
+        createdAt: order.createdAt.toISOString(),
+        detached: false,
+      })),
+      reviews: user.reviews.map((review) => ({
+        id: review.id,
+        productId: review.productId,
+        productName: review.product.name,
+        rating: review.rating,
+        status: review.status,
+        verified: review.verified,
+        createdAt: review.createdAt.toISOString(),
+      })),
+      returns: user.returnRequests.map((item) => ({
+        id: item.id,
+        orderId: item.orderId,
+        orderNumber: item.order.number,
+        status: item.status,
+        reason: item.reason,
+        createdAt: item.createdAt.toISOString(),
+      })),
+      supportTickets: user.supportTickets.map((ticket) => ({
+        ...ticket,
+        updatedAt: ticket.updatedAt.toISOString(),
+      })),
+      counts: {
+        orders: user._count.orders,
+        reviews: user._count.reviews,
+        returns: user._count.returnRequests,
+        supportTickets: user._count.supportTickets,
+        addresses: user._count.addresses,
+      },
+      retention: {
+        purchaseHistoryOwnerRetainedAfterDeletion: true,
+        customerIdentityDeletedOnAccountDeletion: true,
+      },
+    };
+  }
+
+  async updateAdminCustomer(
+    id: string,
+    input: {
+      tags?: string[];
+      note?: string | null;
+      marketingConsent?: boolean;
+      accountStatus?: "ACTIVE" | "DISABLED";
+    },
+    actorId: string,
+  ) {
+    return this.db.$transaction(async (tx) => {
+      const before = await tx.user.findUnique({ where: { id } });
+      if (!before || before.role !== "CUSTOMER")
+        throw new AppError(404, "CUSTOMER_NOT_FOUND", "Customer not found");
+      const now = new Date();
+      const data: Prisma.UserUpdateInput = {};
+      if (input.tags !== undefined) data.tags = normalizeCustomerTags(input.tags);
+      if (input.note !== undefined) data.note = input.note || null;
+      if (input.marketingConsent !== undefined) {
+        data.marketingConsent = input.marketingConsent;
+        if (input.marketingConsent !== before.marketingConsent)
+          data.marketingConsentUpdatedAt = now;
+      }
+      if (input.accountStatus !== undefined)
+        data.disabledAt = input.accountStatus === "DISABLED" ? now : null;
+      if (input.accountStatus === "DISABLED" && !before.disabledAt)
+        data.authVersion = { increment: 1 };
+      const updated = await tx.user.update({ where: { id }, data });
+      if (input.accountStatus === "DISABLED")
+        await tx.session.updateMany({
+          where: { userId: id, revokedAt: null },
+          data: { revokedAt: now },
+        });
+      await tx.auditLog.create({
+        data: {
+          userId: actorId,
+          action: "customer.updated",
+          resource: "customer",
+          resourceId: id,
+          before: {
+            tags: before.tags,
+            notePresent: Boolean(before.note),
+            marketingConsent: before.marketingConsent,
+            accountStatus: before.disabledAt ? "DISABLED" : "ACTIVE",
+          },
+          after: {
+            tags: updated.tags,
+            notePresent: Boolean(updated.note),
+            marketingConsent: updated.marketingConsent,
+            accountStatus: updated.disabledAt ? "DISABLED" : "ACTIVE",
+          },
+        },
+      });
+      return updated;
+    });
+  }
+
   listReviews() {
     return this.db.review.findMany({
       include: {
@@ -1006,27 +1586,471 @@ export class PrismaPersistence {
       orderBy: { createdAt: "desc" },
     });
   }
-  async moderateReview(id: string, status: string, actorId: string) {
-    const review = await this.db.review.update({
+
+  async listAdminReturnsPage(input: {
+    search?: string;
+    status?: string;
+    page: number;
+    limit: number;
+  }) {
+    const search = input.search?.trim();
+    const searchedWhere: Prisma.ReturnRequestWhereInput = search
+      ? {
+          OR: [
+            { reason: { contains: search, mode: "insensitive" } },
+            { order: { number: { contains: search, mode: "insensitive" } } },
+            {
+              user: {
+                is: {
+                  OR: [
+                    { name: { contains: search, mode: "insensitive" } },
+                    { email: { contains: search, mode: "insensitive" } },
+                    { mobile: { contains: search, mode: "insensitive" } },
+                  ],
+                },
+              },
+            },
+          ],
+        }
+      : {};
+    const where: Prisma.ReturnRequestWhereInput = {
+      ...searchedWhere,
+      ...(input.status ? { status: input.status } : {}),
+    };
+    const [rows, total, statusGroups] = await this.db.$transaction([
+      this.db.returnRequest.findMany({
+        where,
+        include: {
+          order: {
+            select: {
+              id: true,
+              number: true,
+              status: true,
+              total: true,
+              currency: true,
+            },
+          },
+          user: { select: { id: true, name: true, email: true, mobile: true } },
+          refund: { select: { id: true, status: true, amount: true } },
+          _count: { select: { items: true } },
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip: (input.page - 1) * input.limit,
+        take: input.limit,
+      }),
+      this.db.returnRequest.count({ where }),
+      this.db.returnRequest.groupBy({
+        by: ["status"],
+        where: searchedWhere,
+        _count: { id: true },
+        orderBy: { status: "asc" },
+      }),
+    ]);
+    return {
+      items: rows.map((item) => ({
+        id: item.id,
+        status: item.status,
+        reason: item.reason,
+        notes: item.notes || null,
+        createdAt: item.createdAt.toISOString(),
+        updatedAt: item.updatedAt.toISOString(),
+        itemCount: item._count.items,
+        order: {
+          id: item.order.id,
+          number: item.order.number,
+          status: item.order.status,
+          total: number(item.order.total),
+          currency: item.order.currency,
+        },
+        customer: item.user
+          ? { ...item.user, mobile: item.user.mobile || null }
+          : null,
+        refund: item.refund
+          ? {
+              id: item.refund.id,
+              status: item.refund.status,
+              amount: number(item.refund.amount),
+              currency: item.order.currency,
+            }
+          : null,
+      })),
+      pagination: pagination(input.page, input.limit, total),
+      facets: {
+        statuses: statusGroups.map((group) => ({
+          value: group.status,
+          count: (group._count as { id: number }).id,
+        })),
+      },
+    };
+  }
+
+  async getAdminReturnDetail(id: string) {
+    const item = await this.db.returnRequest.findUnique({
       where: { id },
-      data: { status },
-    });
-    await this.db.auditLog.create({
-      data: {
-        userId: actorId,
-        action: "review.moderated",
-        resource: "review",
-        resourceId: id,
-        after: { status },
+      include: {
+        order: {
+          select: {
+            id: true,
+            number: true,
+            status: true,
+            total: true,
+            currency: true,
+          },
+        },
+        user: { select: { id: true, name: true, email: true, mobile: true } },
+        refund: { select: { id: true, status: true, amount: true } },
+        items: {
+          include: {
+            orderItem: { select: { id: true, name: true, sku: true } },
+          },
+          orderBy: { id: "asc" },
+        },
       },
     });
-    return review;
+    if (!item)
+      throw new AppError(404, "RETURN_NOT_FOUND", "Return request not found");
+    return {
+      id: item.id,
+      status: item.status,
+      reason: item.reason,
+      notes: item.notes || null,
+      createdAt: item.createdAt.toISOString(),
+      updatedAt: item.updatedAt.toISOString(),
+      itemCount: item.items.length,
+      order: {
+        id: item.order.id,
+        number: item.order.number,
+        status: item.order.status,
+        total: number(item.order.total),
+        currency: item.order.currency,
+      },
+      customer: item.user
+        ? { ...item.user, mobile: item.user.mobile || null }
+        : null,
+      refund: item.refund
+        ? {
+            id: item.refund.id,
+            status: item.refund.status,
+            amount: number(item.refund.amount),
+            currency: item.order.currency,
+          }
+        : null,
+      items: item.items.map((entry) => ({
+        id: entry.id,
+        orderItemId: entry.orderItemId,
+        name: entry.orderItem.name,
+        sku: entry.orderItem.sku,
+        quantity: entry.quantity,
+        condition: entry.condition || null,
+      })),
+    };
+  }
+
+  async listAdminReviewsPage(input: {
+    search?: string;
+    status?: string;
+    rating?: number;
+    verified?: boolean;
+    page: number;
+    limit: number;
+  }) {
+    const search = input.search?.trim();
+    const searchedWhere: Prisma.ReviewWhereInput = search
+      ? {
+          OR: [
+            { title: { contains: search, mode: "insensitive" } },
+            { body: { contains: search, mode: "insensitive" } },
+            { user: { name: { contains: search, mode: "insensitive" } } },
+            { user: { email: { contains: search, mode: "insensitive" } } },
+            { product: { name: { contains: search, mode: "insensitive" } } },
+          ],
+        }
+      : {};
+    const where: Prisma.ReviewWhereInput = {
+      ...searchedWhere,
+      ...(input.status ? { status: input.status } : {}),
+      ...(input.rating ? { rating: input.rating } : {}),
+      ...(input.verified === undefined ? {} : { verified: input.verified }),
+    };
+    const [rows, total, statusGroups, ratingGroups, verifiedGroups] =
+      await this.db.$transaction([
+        this.db.review.findMany({
+          where,
+          include: {
+            user: { select: { id: true, name: true, email: true } },
+            product: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+                media: {
+                  where: { type: "IMAGE" },
+                  select: { url: true },
+                  orderBy: { position: "asc" },
+                  take: 1,
+                },
+              },
+            },
+          },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          skip: (input.page - 1) * input.limit,
+          take: input.limit,
+        }),
+        this.db.review.count({ where }),
+        this.db.review.groupBy({
+          by: ["status"],
+          where: searchedWhere,
+          _count: { id: true },
+          orderBy: { status: "asc" },
+        }),
+        this.db.review.groupBy({
+          by: ["rating"],
+          where: searchedWhere,
+          _count: { id: true },
+          orderBy: { rating: "asc" },
+        }),
+        this.db.review.groupBy({
+          by: ["verified"],
+          where: searchedWhere,
+          _count: { id: true },
+          orderBy: { verified: "asc" },
+        }),
+      ]);
+    const items = rows.map((review) => ({
+      id: review.id,
+      status: review.status,
+      rating: review.rating,
+      title: review.title || null,
+      body: review.body,
+      verified: review.verified,
+      createdAt: review.createdAt.toISOString(),
+      customer: review.user,
+      product: {
+        id: review.product.id,
+        name: review.product.name,
+        slug: review.product.slug,
+        thumbnail: review.product.media[0]?.url || null,
+      },
+    }));
+    return {
+      items,
+      pagination: pagination(input.page, input.limit, total),
+      facets: {
+        statuses: statusGroups.map((group) => ({
+          value: group.status,
+          count: (group._count as { id: number }).id,
+        })),
+        ratings: ratingGroups.map((group) => ({
+          value: String(group.rating),
+          count: (group._count as { id: number }).id,
+        })),
+        verified: verifiedGroups.map((group) => ({
+          value: String(group.verified),
+          count: (group._count as { id: number }).id,
+        })),
+      },
+    };
+  }
+
+  async getAdminReviewDetail(id: string) {
+    const review = await this.db.review.findUnique({
+      where: { id },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+        product: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            media: {
+              where: { type: "IMAGE" },
+              select: { url: true },
+              orderBy: { position: "asc" },
+              take: 1,
+            },
+          },
+        },
+      },
+    });
+    if (!review)
+      throw new AppError(404, "REVIEW_NOT_FOUND", "Review not found");
+    return {
+      id: review.id,
+      status: review.status,
+      rating: review.rating,
+      title: review.title || null,
+      body: review.body,
+      verified: review.verified,
+      createdAt: review.createdAt.toISOString(),
+      customer: review.user,
+      product: {
+        id: review.product.id,
+        name: review.product.name,
+        slug: review.product.slug,
+        thumbnail: review.product.media[0]?.url || null,
+      },
+    };
+  }
+
+  async listAdminSupportPage(input: {
+    search?: string;
+    status?: string;
+    priority?: string;
+    page: number;
+    limit: number;
+  }) {
+    const search = input.search?.trim();
+    const searchedWhere: Prisma.SupportTicketWhereInput = search
+      ? {
+          OR: [
+            { number: { contains: search, mode: "insensitive" } },
+            { subject: { contains: search, mode: "insensitive" } },
+            {
+              user: {
+                is: {
+                  OR: [
+                    { name: { contains: search, mode: "insensitive" } },
+                    { email: { contains: search, mode: "insensitive" } },
+                  ],
+                },
+              },
+            },
+          ],
+        }
+      : {};
+    const where: Prisma.SupportTicketWhereInput = {
+      ...searchedWhere,
+      ...(input.status ? { status: input.status } : {}),
+      ...(input.priority ? { priority: input.priority } : {}),
+    };
+    const [rows, total, statusGroups, priorityGroups] =
+      await this.db.$transaction([
+        this.db.supportTicket.findMany({
+          where,
+          include: {
+            user: { select: { id: true, name: true, email: true, mobile: true } },
+            messages: {
+              select: { createdAt: true },
+              orderBy: { createdAt: "desc" },
+              take: 1,
+            },
+            _count: { select: { messages: true } },
+          },
+          orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+          skip: (input.page - 1) * input.limit,
+          take: input.limit,
+        }),
+        this.db.supportTicket.count({ where }),
+        this.db.supportTicket.groupBy({
+          by: ["status"],
+          where: searchedWhere,
+          _count: { id: true },
+          orderBy: { status: "asc" },
+        }),
+        this.db.supportTicket.groupBy({
+          by: ["priority"],
+          where: searchedWhere,
+          _count: { id: true },
+          orderBy: { priority: "asc" },
+        }),
+      ]);
+    return {
+      items: rows.map((ticket) => ({
+        id: ticket.id,
+        number: ticket.number,
+        subject: ticket.subject,
+        status: ticket.status,
+        priority: ticket.priority,
+        createdAt: ticket.createdAt.toISOString(),
+        updatedAt: ticket.updatedAt.toISOString(),
+        messageCount: ticket._count.messages,
+        lastMessageAt: ticket.messages[0]?.createdAt.toISOString() ||
+          ticket.createdAt.toISOString(),
+        customer: ticket.user
+          ? { ...ticket.user, mobile: ticket.user.mobile || null }
+          : null,
+      })),
+      pagination: pagination(input.page, input.limit, total),
+      facets: {
+        statuses: statusGroups.map((group) => ({
+          value: group.status,
+          count: (group._count as { id: number }).id,
+        })),
+        priorities: priorityGroups.map((group) => ({
+          value: group.priority,
+          count: (group._count as { id: number }).id,
+        })),
+      },
+    };
+  }
+
+  async getAdminSupportDetail(id: string) {
+    const ticket = await this.db.supportTicket.findUnique({
+      where: { id },
+      include: {
+        user: { select: { id: true, name: true, email: true, mobile: true } },
+        _count: { select: { messages: true } },
+        messages: {
+          include: { author: { select: { id: true, name: true, role: true } } },
+          orderBy: { createdAt: "desc" },
+          take: 200,
+        },
+      },
+    });
+    if (!ticket)
+      throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
+    return {
+      id: ticket.id,
+      number: ticket.number,
+      subject: ticket.subject,
+      status: ticket.status,
+      priority: ticket.priority,
+      createdAt: ticket.createdAt.toISOString(),
+      updatedAt: ticket.updatedAt.toISOString(),
+      messageCount: ticket._count.messages,
+      lastMessageAt:
+        ticket.messages[0]?.createdAt.toISOString() ||
+        ticket.createdAt.toISOString(),
+      customer: ticket.user
+        ? { ...ticket.user, mobile: ticket.user.mobile || null }
+        : null,
+      messages: ticket.messages.slice().reverse().map((message) => ({
+        id: message.id,
+        body: message.body,
+        internal: message.internal,
+        createdAt: message.createdAt.toISOString(),
+        author: message.author,
+      })),
+    };
+  }
+
+  async moderateReview(id: string, status: string, actorId: string) {
+    return this.db.$transaction(async (tx) => {
+      const review = await tx.review.findUnique({ where: { id } });
+      if (!review)
+        throw new AppError(404, "REVIEW_NOT_FOUND", "Review not found");
+      const updated = await tx.review.update({ where: { id }, data: { status } });
+      await tx.auditLog.create({
+        data: {
+          userId: actorId,
+          action: "review.moderated",
+          resource: "review",
+          resourceId: id,
+          before: { status: review.status },
+          after: { status },
+        },
+      });
+      return updated;
+    });
   }
   async createSupportTicket(
     userId: string,
     input: { subject: string; message: string; priority: string },
   ) {
-    const number = `SUP-${Date.now().toString(36).toUpperCase()}`;
+    const number = `SUP-${Date.now().toString(36).toUpperCase()}-${crypto
+      .randomBytes(3)
+      .toString("hex")
+      .toUpperCase()}`;
     return this.db.supportTicket.create({
       data: {
         number,
@@ -1045,10 +2069,12 @@ export class PrismaPersistence {
         messages: {
           where: userId ? { internal: false } : undefined,
           orderBy: { createdAt: "asc" },
+          take: 100,
         },
         user: { select: { name: true, email: true } },
       },
       orderBy: { updatedAt: "desc" },
+      take: userId ? 50 : 100,
     });
   }
   async replySupportTicket(
@@ -1057,24 +2083,76 @@ export class PrismaPersistence {
     message: string,
     status: string | undefined,
     customerId?: string,
+    internal = false,
   ) {
-    const ticket = await this.db.supportTicket.findFirst({
-      where: { id, ...(customerId ? { userId: customerId } : {}) },
-    });
-    if (!ticket)
-      throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
-    await this.db.$transaction([
-      this.db.supportMessage.create({
-        data: { ticketId: id, authorId: actorId, body: message },
-      }),
-      this.db.supportTicket.update({
+    return this.db.$transaction(async (tx) => {
+      const ticket = await tx.supportTicket.findFirst({
+        where: { id, ...(customerId ? { userId: customerId } : {}) },
+      });
+      if (!ticket)
+        throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
+      const nextStatus =
+        status || (internal ? ticket.status : customerId ? "OPEN" : "WAITING_CUSTOMER");
+      await tx.supportMessage.create({
+        data: { ticketId: id, authorId: actorId, body: message, internal },
+      });
+      await tx.supportTicket.update({
         where: { id },
-        data: { status: status || (customerId ? "OPEN" : "WAITING_CUSTOMER") },
-      }),
-    ]);
-    return this.db.supportTicket.findUnique({
-      where: { id },
-      include: { messages: { orderBy: { createdAt: "asc" } } },
+        data: { status: nextStatus },
+      });
+      if (!customerId)
+        await tx.auditLog.create({
+          data: {
+            userId: actorId,
+            action: internal ? "support.internal_note_added" : "support.replied",
+            resource: "support_ticket",
+            resourceId: id,
+            before: { status: ticket.status },
+            after: { status: nextStatus, internal },
+          },
+        });
+      const result = await tx.supportTicket.findUnique({
+        where: { id },
+        include: {
+          user: { select: { id: true, name: true, email: true, mobile: true } },
+          messages: {
+            where: customerId ? { internal: false } : undefined,
+            include: { author: { select: { id: true, name: true, role: true } } },
+            orderBy: { createdAt: "desc" },
+            take: 200,
+          },
+        },
+      });
+      if (!result)
+        throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
+      return result;
+    });
+  }
+
+  async updateSupportTicket(
+    id: string,
+    input: { status?: string; priority?: string },
+    actorId: string,
+  ) {
+    return this.db.$transaction(async (tx) => {
+      const ticket = await tx.supportTicket.findUnique({ where: { id } });
+      if (!ticket)
+        throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
+      const updated = await tx.supportTicket.update({
+        where: { id },
+        data: { status: input.status, priority: input.priority },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: actorId,
+          action: "support.updated",
+          resource: "support_ticket",
+          resourceId: id,
+          before: { status: ticket.status, priority: ticket.priority },
+          after: { status: updated.status, priority: updated.priority },
+        },
+      });
+      return updated;
     });
   }
 
@@ -1163,6 +2241,20 @@ export class PrismaPersistence {
     source = "ADMIN",
   ) {
     await this.db.$transaction(async (tx) => {
+      const receivedReturn =
+        from === "RETURN_APPROVED" && to === "RETURNED"
+          ? await tx.returnRequest.findFirst({
+              where: { orderId, status: "APPROVED" },
+              orderBy: { updatedAt: "desc" },
+              select: { id: true },
+            })
+          : null;
+      if (from === "RETURN_APPROVED" && to === "RETURNED" && !receivedReturn)
+        throw new AppError(
+          409,
+          "RETURN_REQUEST_MISSING",
+          "An approved return request is required before receiving a return",
+        );
       const changed = await tx.order.updateMany({
         where: { id: orderId, status: from as OrderStatus },
         data: { status: to as OrderStatus },
@@ -1173,6 +2265,18 @@ export class PrismaPersistence {
           "STALE_ORDER_STATE",
           "Order state changed; reload and try again",
         );
+      if (receivedReturn) {
+        const changedReturn = await tx.returnRequest.updateMany({
+          where: { id: receivedReturn.id, status: "APPROVED" },
+          data: { status: "RECEIVED" },
+        });
+        if (changedReturn.count !== 1)
+          throw new AppError(
+            409,
+            "STALE_RETURN_STATE",
+            "Return state changed; reload and try again",
+          );
+      }
       await tx.orderHistory.create({
         data: {
           orderId,
@@ -1407,31 +2511,218 @@ export class PrismaPersistence {
     };
   }
 
-  async saveReturn(request: {
-    id: string;
-    orderId: string;
-    userId: string;
-    reason: string;
-    status: string;
-  }) {
-    await this.db.returnRequest.create({ data: request });
+  async createReturnRequest(
+    userId: string,
+    input: {
+      orderId: string;
+      reason: string;
+      items?: Array<{ variantId: string; quantity: number }>;
+    },
+  ) {
+    return this.db.$transaction(async (tx) => {
+      const order = await tx.order.findFirst({
+        where: { id: input.orderId, userId },
+        include: { items: true },
+      });
+      if (!order)
+        throw new AppError(404, "ORDER_NOT_FOUND", "Order not found");
+      if (order.status !== "DELIVERED")
+        throw new AppError(
+          409,
+          "RETURN_NOT_AVAILABLE",
+          "Returns are available only after delivery",
+        );
+      const existing = await tx.returnRequest.findFirst({
+        where: { orderId: order.id, status: { not: "REJECTED" } },
+        select: { id: true },
+      });
+      if (existing)
+        throw new AppError(
+          409,
+          "RETURN_ALREADY_EXISTS",
+          "A return is already active for this order",
+        );
+      const requested = input.items || order.items.map((item) => ({
+        variantId: item.variantId,
+        quantity: item.quantity,
+      }));
+      const seen = new Set<string>();
+      const selected = requested.map((selection) => {
+        if (seen.has(selection.variantId))
+          throw new AppError(
+            400,
+            "DUPLICATE_RETURN_ITEM",
+            "Each product variant can be selected only once",
+          );
+        seen.add(selection.variantId);
+        const orderItem = order.items.find(
+          (item) => item.variantId === selection.variantId,
+        );
+        if (!orderItem || selection.quantity > orderItem.quantity)
+          throw new AppError(
+            422,
+            "INVALID_RETURN_QUANTITY",
+            "Return quantity exceeds the purchased quantity",
+          );
+        return { orderItemId: orderItem.id, quantity: selection.quantity };
+      });
+      const created = await tx.returnRequest.create({
+        data: {
+          orderId: order.id,
+          userId,
+          reason: input.reason,
+          status: "REQUESTED",
+          items: { create: selected },
+        },
+        include: {
+          items: {
+            include: {
+              orderItem: { select: { variantId: true, name: true, sku: true } },
+            },
+          },
+        },
+      });
+      const changed = await tx.order.updateMany({
+        where: { id: order.id, status: "DELIVERED" },
+        data: { status: "RETURN_REQUESTED" },
+      });
+      if (changed.count !== 1)
+        throw new AppError(
+          409,
+          "STALE_ORDER_STATE",
+          "Order state changed; reload and try again",
+        );
+      await tx.orderHistory.create({
+        data: {
+          orderId: order.id,
+          fromStatus: "DELIVERED",
+          toStatus: "RETURN_REQUESTED",
+          actorId: userId,
+          source: "CUSTOMER",
+          metadata: { returnRequestId: created.id },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: "return.requested",
+          resource: "return_request",
+          resourceId: created.id,
+          after: {
+            orderId: order.id,
+            itemCount: selected.length,
+            totalQuantity: selected.reduce((sum, item) => sum + item.quantity, 0),
+          },
+        },
+      });
+      return created;
+    });
+  }
+
+  listCustomerReturns(userId: string) {
+    return this.db.returnRequest.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        orderId: true,
+        reason: true,
+        status: true,
+        notes: true,
+        createdAt: true,
+        updatedAt: true,
+        items: {
+          select: {
+            id: true,
+            quantity: true,
+            condition: true,
+            orderItem: { select: { variantId: true, name: true, sku: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
   }
 
   async decideReturn(
     id: string,
-    status: "APPROVED" | "REJECTED",
+    status: "APPROVED" | "REJECTED" | "RECEIVED",
     notes?: string,
+    actorId?: string,
   ) {
-    const changed = await this.db.returnRequest.updateMany({
-      where: { id, status: "REQUESTED" },
-      data: { status, notes },
+    return this.db.$transaction(async (tx) => {
+      const current = await tx.returnRequest.findUnique({
+        where: { id },
+        include: { order: { select: { status: true } } },
+      });
+      if (!current)
+        throw new AppError(404, "RETURN_NOT_FOUND", "Return request not found");
+      const receiving = status === "RECEIVED";
+      const expectedReturnStatus = receiving ? "APPROVED" : "REQUESTED";
+      const expectedOrderStatus = receiving
+        ? "RETURN_APPROVED"
+        : "RETURN_REQUESTED";
+      if (current.status !== expectedReturnStatus)
+        throw new AppError(
+          409,
+          receiving ? "RETURN_NOT_APPROVED" : "RETURN_ALREADY_DECIDED",
+          receiving
+            ? "Only an approved return can be marked received"
+            : "Return request is no longer pending",
+        );
+      if (current.order.status !== expectedOrderStatus)
+        throw new AppError(
+          409,
+          "STALE_ORDER_STATE",
+          "Order return state changed; reload and try again",
+        );
+      const nextOrderStatus = receiving
+        ? "RETURNED"
+        : status === "APPROVED"
+          ? "RETURN_APPROVED"
+          : "DELIVERED";
+      const changed = await tx.returnRequest.updateMany({
+        where: { id, status: expectedReturnStatus },
+        data: { status, notes },
+      });
+      if (changed.count !== 1)
+        throw new AppError(
+          409,
+          "RETURN_ALREADY_DECIDED",
+          "Return request is no longer pending",
+        );
+      const changedOrder = await tx.order.updateMany({
+        where: { id: current.orderId, status: expectedOrderStatus },
+        data: { status: nextOrderStatus },
+      });
+      if (changedOrder.count !== 1)
+        throw new AppError(
+          409,
+          "STALE_ORDER_STATE",
+          "Order return state changed; reload and try again",
+        );
+      await tx.orderHistory.create({
+        data: {
+          orderId: current.orderId,
+          fromStatus: expectedOrderStatus,
+          toStatus: nextOrderStatus,
+          actorId,
+          source: "ADMIN",
+          metadata: { returnRequestId: id, decision: status },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: actorId,
+          action: "return.decided",
+          resource: "return_request",
+          resourceId: id,
+          before: { status: current.status },
+          after: { status, orderStatus: nextOrderStatus, notesPresent: Boolean(notes) },
+        },
+      });
+      return tx.returnRequest.findUnique({ where: { id } });
     });
-    if (changed.count !== 1)
-      throw new AppError(
-        409,
-        "RETURN_ALREADY_DECIDED",
-        "Return request is no longer pending",
-      );
   }
 
   async listCustomerPayments(userId: string) {
@@ -1702,6 +2993,8 @@ export class PrismaPersistence {
     amount: number,
     idempotencyKey: string,
     reason: string,
+    actorId?: string,
+    requestedReturnId?: string,
   ) {
     if (!Number.isFinite(amount) || amount <= 0)
       throw new AppError(
@@ -1711,6 +3004,64 @@ export class PrismaPersistence {
       );
     return this.db.$transaction(
       async (tx) => {
+        const resolveReceivedReturn = async (preferredId?: string | null) => {
+          const selectedId = preferredId || requestedReturnId;
+          const request = selectedId
+            ? await tx.returnRequest.findUnique({ where: { id: selectedId } })
+            : await tx.returnRequest.findFirst({
+                where: {
+                  orderId,
+                  status: { in: ["APPROVED", "RECEIVED"] },
+                },
+                orderBy: { updatedAt: "desc" },
+              });
+          if (selectedId && !request)
+            throw new AppError(
+              409,
+              "RETURN_NOT_RECEIVED",
+              "The selected return is not received and ready for refund",
+            );
+          if (
+            request &&
+            (request.orderId !== orderId || request.status !== "RECEIVED")
+          )
+            throw new AppError(
+              409,
+              "RETURN_NOT_RECEIVED",
+              "The selected return is not received and ready for refund",
+            );
+          return request?.status === "RECEIVED" ? request.id : undefined;
+        };
+        const markReturnRefundPending = async (returnRequestId?: string) => {
+          if (!returnRequestId) return;
+          const changedOrder = await tx.order.updateMany({
+            where: { id: orderId, status: "RETURNED" },
+            data: { status: "REFUND_PENDING" },
+          });
+          if (changedOrder.count === 1) {
+            await tx.orderHistory.create({
+              data: {
+                orderId,
+                fromStatus: "RETURNED",
+                toStatus: "REFUND_PENDING",
+                actorId,
+                source: "REFUND",
+                metadata: { returnRequestId },
+              },
+            });
+            return;
+          }
+          const order = await tx.order.findUnique({
+            where: { id: orderId },
+            select: { status: true },
+          });
+          if (order?.status !== "REFUND_PENDING")
+            throw new AppError(
+              409,
+              "STALE_ORDER_STATE",
+              "Returned order is not ready for refund",
+            );
+        };
         const existing = await tx.refund.findUnique({
           where: { idempotencyKey },
         });
@@ -1733,6 +3084,15 @@ export class PrismaPersistence {
               "IDEMPOTENCY_CONFLICT",
               "This idempotency key belongs to another refund operation",
             );
+          if (
+            requestedReturnId !== undefined &&
+            existing.returnRequestId !== requestedReturnId
+          )
+            throw new AppError(
+              409,
+              "IDEMPOTENCY_CONFLICT",
+              "This idempotency key was already used with another return request",
+            );
           if (existing.reason === null)
             await tx.refund.update({
               where: { id: existing.id },
@@ -1753,10 +3113,23 @@ export class PrismaPersistence {
                 "PAYMENT_NOT_REFUNDABLE",
                 "No captured provider payment is available for refund",
               );
+            const returnRequestId = await resolveReceivedReturn(
+              existing.returnRequestId,
+            );
+            if (returnRequestId && existing.returnRequestId !== returnRequestId)
+              await tx.refund.update({
+                where: { id: existing.id },
+                data: { returnRequestId },
+              });
+            await markReturnRefundPending(returnRequestId);
             return {
               duplicate: true,
               process: true,
-              refund: { ...existing, reason: existing.reason || reason },
+              refund: {
+                ...existing,
+                reason: existing.reason || reason,
+                returnRequestId: returnRequestId || null,
+              },
               provider: existingPayment.provider,
               externalId: existingPayment.externalId,
             };
@@ -1790,9 +3163,12 @@ export class PrismaPersistence {
               "REFUND_AMOUNT_INVALID",
               "Refund exceeds the remaining captured amount",
             );
+          const returnRequestId = await resolveReceivedReturn(
+            existing.returnRequestId,
+          );
           const reserved = await tx.refund.updateMany({
             where: { id: existing.id, status: "FAILED" },
-            data: { status: "PENDING", reason },
+            data: { status: "PENDING", reason, returnRequestId },
           });
           if (reserved.count !== 1) {
             const latest = await tx.refund.findUnique({
@@ -1813,10 +3189,16 @@ export class PrismaPersistence {
                 "Refund retry state changed; reload and try again",
               );
           }
+          await markReturnRefundPending(returnRequestId);
           return {
             duplicate: true,
             process: true,
-            refund: { ...existing, status: "PENDING", reason },
+            refund: {
+              ...existing,
+              status: "PENDING",
+              reason,
+              returnRequestId: returnRequestId || null,
+            },
             provider: existingPayment.provider,
             externalId: existingPayment.externalId,
           };
@@ -1844,15 +3226,18 @@ export class PrismaPersistence {
             "REFUND_AMOUNT_INVALID",
             "Refund exceeds the remaining captured amount",
           );
+        const returnRequestId = await resolveReceivedReturn();
         const refund = await tx.refund.create({
           data: {
             paymentId: payment.id,
+            returnRequestId,
             amount,
             status: "PENDING",
             idempotencyKey,
             reason,
           },
         });
+        await markReturnRefundPending(returnRequestId);
         return {
           duplicate: false,
           process: true,
@@ -1912,6 +3297,53 @@ export class PrismaPersistence {
         where: { id: payment.id },
         data: { status: paymentStatus },
       });
+      if (refund.returnRequestId) {
+        const changedReturn = await tx.returnRequest.updateMany({
+          where: { id: refund.returnRequestId, status: "RECEIVED" },
+          data: { status: "REFUNDED" },
+        });
+        if (changedReturn.count === 0) {
+          const request = await tx.returnRequest.findUnique({
+            where: { id: refund.returnRequestId },
+            select: { status: true },
+          });
+          if (request?.status !== "REFUNDED")
+            throw new AppError(
+              409,
+              "STALE_RETURN_STATE",
+              "Return state changed before refund completion",
+            );
+        }
+        const nextOrderStatus =
+          paymentStatus === "REFUNDED" ? "REFUNDED" : "RETURNED";
+        const changedOrder = await tx.order.updateMany({
+          where: { id: payment.orderId, status: "REFUND_PENDING" },
+          data: { status: nextOrderStatus },
+        });
+        if (changedOrder.count === 1)
+          await tx.orderHistory.create({
+            data: {
+              orderId: payment.orderId,
+              fromStatus: "REFUND_PENDING",
+              toStatus: nextOrderStatus,
+              actorId,
+              source: "REFUND",
+              metadata: { returnRequestId: refund.returnRequestId, refundId: id },
+            },
+          });
+        else {
+          const order = await tx.order.findUnique({
+            where: { id: payment.orderId },
+            select: { status: true },
+          });
+          if (order?.status !== nextOrderStatus)
+            throw new AppError(
+              409,
+              "STALE_ORDER_STATE",
+              "Order state changed before refund completion",
+            );
+        }
+      }
       if (changed.count === 1)
         await tx.auditLog.create({
           data: {
@@ -1933,9 +3365,35 @@ export class PrismaPersistence {
   }
 
   async failRefund(id: string) {
-    await this.db.refund.updateMany({
-      where: { id, status: "PENDING" },
-      data: { status: "FAILED" },
+    await this.db.$transaction(async (tx) => {
+      const refund = await tx.refund.findUnique({
+        where: { id },
+        include: { payment: { select: { orderId: true } } },
+      });
+      if (!refund) return;
+      const changed = await tx.refund.updateMany({
+        where: { id, status: "PENDING" },
+        data: { status: "FAILED" },
+      });
+      if (changed.count !== 1 || !refund.returnRequestId) return;
+      const restored = await tx.order.updateMany({
+        where: { id: refund.payment.orderId, status: "REFUND_PENDING" },
+        data: { status: "RETURNED" },
+      });
+      if (restored.count === 1)
+        await tx.orderHistory.create({
+          data: {
+            orderId: refund.payment.orderId,
+            fromStatus: "REFUND_PENDING",
+            toStatus: "RETURNED",
+            source: "REFUND",
+            metadata: {
+              returnRequestId: refund.returnRequestId,
+              refundId: refund.id,
+              result: "FAILED",
+            },
+          },
+        });
     });
   }
 
@@ -2123,4 +3581,146 @@ export class PrismaPersistence {
       throw error;
     }
   }
+}
+
+type PersistentCustomerRow = {
+  id: string;
+  name: string;
+  email: string;
+  mobile: string | null;
+  tags: string[];
+  marketingConsent: boolean;
+  marketingConsentUpdatedAt: Date | null;
+  disabledAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  orderCount: number;
+  paidOrderCount: number;
+  inrPaidOrderCount: number;
+  totalSpent: Prisma.Decimal;
+  lastOrderAt: Date | null;
+  lastPaidOrderAt: Date | null;
+  spendByCurrency: Prisma.JsonValue;
+};
+
+const customerMetricsSql = Prisma.sql`
+  SELECT
+    u."id",
+    u."name",
+    u."email",
+    u."mobile",
+    u."tags",
+    u."marketingConsent",
+    u."marketingConsentUpdatedAt",
+    u."disabledAt",
+    u."createdAt",
+    u."updatedAt",
+    COUNT(o."id")::integer AS "orderCount",
+    COUNT(o."id") FILTER (
+      WHERE o."status"::text IN (
+        'PAID', 'CONFIRMED', 'PROCESSING', 'PACKED', 'SHIPPED',
+        'OUT_FOR_DELIVERY', 'DELIVERED', 'RETURN_REQUESTED',
+        'RETURN_APPROVED', 'RETURNED', 'REFUND_PENDING'
+      )
+    )::integer AS "paidOrderCount",
+    COUNT(o."id") FILTER (
+      WHERE o."currency" = 'INR' AND o."status"::text IN (
+        'PAID', 'CONFIRMED', 'PROCESSING', 'PACKED', 'SHIPPED',
+        'OUT_FOR_DELIVERY', 'DELIVERED', 'RETURN_REQUESTED',
+        'RETURN_APPROVED', 'RETURNED', 'REFUND_PENDING'
+      )
+    )::integer AS "inrPaidOrderCount",
+    COALESCE(SUM(
+      CASE WHEN o."currency" = 'INR' AND o."status"::text IN (
+        'PAID', 'CONFIRMED', 'PROCESSING', 'PACKED', 'SHIPPED',
+        'OUT_FOR_DELIVERY', 'DELIVERED', 'RETURN_REQUESTED',
+        'RETURN_APPROVED', 'RETURNED', 'REFUND_PENDING'
+      ) THEN GREATEST(
+        o."total" - COALESCE((
+          SELECT SUM(r."amount")
+          FROM "Refund" r
+          INNER JOIN "Payment" p ON p."id" = r."paymentId"
+          WHERE p."orderId" = o."id" AND r."status" = 'SUCCEEDED'
+        ), 0),
+        0
+      ) ELSE 0 END
+    ), 0) AS "totalSpent",
+    MAX(o."createdAt") AS "lastOrderAt",
+    MAX(o."createdAt") FILTER (
+      WHERE o."status"::text IN (
+        'PAID', 'CONFIRMED', 'PROCESSING', 'PACKED', 'SHIPPED',
+        'OUT_FOR_DELIVERY', 'DELIVERED', 'RETURN_REQUESTED',
+        'RETURN_APPROVED', 'RETURNED', 'REFUND_PENDING'
+      )
+    ) AS "lastPaidOrderAt"
+    ,COALESCE((
+      SELECT JSONB_AGG(JSONB_BUILD_OBJECT(
+        'currency', spend.currency,
+        'totalSpent', spend."totalSpent",
+        'paidOrderCount', spend."paidOrderCount",
+        'averageOrderValue', CASE WHEN spend."paidOrderCount" > 0
+          THEN ROUND(spend."totalSpent" / spend."paidOrderCount", 2) ELSE 0 END
+      ) ORDER BY spend.currency)
+      FROM (
+        SELECT o2."currency" AS currency,
+          SUM(GREATEST(o2."total" - COALESCE((
+            SELECT SUM(r2."amount") FROM "Refund" r2
+            INNER JOIN "Payment" p2 ON p2."id" = r2."paymentId"
+            WHERE p2."orderId" = o2."id" AND r2."status" = 'SUCCEEDED'
+          ), 0), 0)) AS "totalSpent",
+          COUNT(*)::integer AS "paidOrderCount"
+        FROM "Order" o2
+        WHERE o2."userId" = u."id" AND o2."status"::text IN (
+          'PAID', 'CONFIRMED', 'PROCESSING', 'PACKED', 'SHIPPED',
+          'OUT_FOR_DELIVERY', 'DELIVERED', 'RETURN_REQUESTED',
+          'RETURN_APPROVED', 'RETURNED', 'REFUND_PENDING'
+        )
+        GROUP BY o2."currency"
+      ) spend
+    ), '[]'::jsonb) AS "spendByCurrency"
+  FROM "User" u
+  LEFT JOIN "Order" o ON o."userId" = u."id"
+  WHERE u."role"::text = 'CUSTOMER'
+  GROUP BY u."id"
+`;
+
+function persistentCustomerDto(row: PersistentCustomerRow) {
+  const totalSpent = number(row.totalSpent);
+  const spendByCurrency = Array.isArray(row.spendByCurrency)
+    ? row.spendByCurrency
+    : [];
+  const segments = [] as Array<"NEW" | "REPEAT" | "HIGH_VALUE" | "AT_RISK">;
+  if (row.createdAt.getTime() >= Date.now() - 30 * 86_400_000)
+    segments.push("NEW");
+  if (row.paidOrderCount >= 2) segments.push("REPEAT");
+  if (totalSpent >= 5000) segments.push("HIGH_VALUE");
+  if (
+    row.paidOrderCount > 0 &&
+    row.lastPaidOrderAt &&
+    row.lastPaidOrderAt.getTime() < Date.now() - 90 * 86_400_000
+  )
+    segments.push("AT_RISK");
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    mobile: row.mobile,
+    accountStatus: row.disabledAt ? ("DISABLED" as const) : ("ACTIVE" as const),
+    marketingConsent: row.marketingConsent,
+    marketingConsentUpdatedAt: row.marketingConsentUpdatedAt?.toISOString() || null,
+    tags: normalizeCustomerTags(row.tags),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    metrics: {
+      orderCount: row.orderCount,
+      totalSpent,
+      averageOrderValue: row.inrPaidOrderCount
+        ? Math.round((totalSpent / row.inrPaidOrderCount) * 100) / 100
+        : 0,
+      lastOrderAt: row.lastOrderAt?.toISOString() || null,
+      currency: "INR" as const,
+      spendByCurrency,
+    },
+    segments,
+  };
 }

@@ -189,14 +189,19 @@ export const couponSchema = z
 export const returnSchema = z.object({
   orderId: z.string().uuid(),
   reason: z.string().trim().min(5).max(1000),
+  items: z.array(z.object({
+    variantId: z.string().uuid(),
+    quantity: z.number().int().min(1).max(1000),
+  }).strict()).min(1).max(100).optional(),
 });
 export const returnDecisionSchema = z.object({
-  status: z.enum(["APPROVED", "REJECTED"]),
+  status: z.enum(["APPROVED", "REJECTED", "RECEIVED"]),
   notes: z.string().trim().max(1000).optional(),
 });
 export const refundSchema = z.object({
   amount: z.number().positive().max(100000000).multipleOf(0.01),
   reason: z.string().trim().min(3).max(500),
+  returnRequestId: z.string().uuid().optional(),
 });
 export const inventoryAdjustmentSchema = z.object({
   quantity: z.number().int().min(-1000000).max(1000000).refine(value => value !== 0),
@@ -211,8 +216,75 @@ export const reviewSchema = z.object({
 export const reviewModerationSchema = z.object({ status: z.enum(["APPROVED", "REJECTED"]) });
 export const supportTicketSchema = z.object({ subject: z.string().trim().min(3).max(160), message: z.string().trim().min(5).max(5000), priority: z.enum(["LOW", "NORMAL", "HIGH"]).default("NORMAL") });
 export const supportReplySchema = z.object({ message: z.string().trim().min(1).max(5000), status: z.enum(["OPEN", "WAITING_CUSTOMER", "RESOLVED", "CLOSED"]).optional() });
+export const customerSupportReplySchema = z.object({
+  message: z.string().trim().min(1).max(5000),
+}).strict();
+const queryBoolean = z.preprocess((value) => {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return value;
+}, z.boolean());
+const pageQuery = {
+  page: z.coerce.number().int().min(1).max(1000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+};
+export const adminCustomerQuerySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  status: z.enum(["ACTIVE", "DISABLED"]).optional(),
+  marketing: z.enum(["SUBSCRIBED", "NOT_SUBSCRIBED"]).optional(),
+  segment: z.enum(["NEW", "REPEAT", "HIGH_VALUE", "AT_RISK"]).optional(),
+  tag: z.string().trim().min(1).max(40).optional(),
+  sortBy: z.enum(["createdAt", "name", "orders", "spent", "lastOrderAt"]).default("createdAt"),
+  sortOrder: z.enum(["asc", "desc"]).default("desc"),
+  ...pageQuery,
+}).strict();
+export const adminCustomerUpdateSchema = z.object({
+  tags: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
+  note: z.string().trim().max(2000).nullable().optional(),
+  marketingConsent: z.boolean().optional(),
+  accountStatus: z.enum(["ACTIVE", "DISABLED"]).optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, {
+  message: "Provide at least one customer field to update",
+});
+export const adminReturnQuerySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  status: z.enum(["REQUESTED", "APPROVED", "REJECTED", "RECEIVED", "REFUNDED"]).optional(),
+  ...pageQuery,
+}).strict();
+export const adminReviewQuerySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  status: z.enum(["PENDING", "APPROVED", "REJECTED"]).optional(),
+  rating: z.coerce.number().int().min(1).max(5).optional(),
+  verified: queryBoolean.optional(),
+  ...pageQuery,
+}).strict();
+export const adminSupportQuerySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  status: z.enum(["OPEN", "WAITING_CUSTOMER", "RESOLVED", "CLOSED"]).optional(),
+  priority: z.enum(["LOW", "NORMAL", "HIGH"]).optional(),
+  ...pageQuery,
+}).strict();
+export const supportInternalNoteSchema = z.object({
+  message: z.string().trim().min(1).max(5000),
+}).strict();
+export const supportUpdateSchema = z.object({
+  status: z.enum(["OPEN", "WAITING_CUSTOMER", "RESOLVED", "CLOSED"]).optional(),
+  priority: z.enum(["LOW", "NORMAL", "HIGH"]).optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, {
+  message: "Provide a status or priority",
+});
 export const totpVerifySchema = z.object({ code: z.string().regex(/^\d{6}$/) });
-export const accountDeletionSchema = z.object({ confirmation: z.literal("DELETE") });
+export const accountDeletionSchema = z.object({
+  confirmation: z.literal("DELETE"),
+  password: z.string().min(1).max(128).optional(),
+  mobileOtp: z.string().regex(/^\d{6}$/).optional(),
+  googleCredential: z.string().min(20).max(10000).optional(),
+}).strict().refine(
+  (value) =>
+    [value.password, value.mobileOtp, value.googleCredential].filter(Boolean)
+      .length <= 1,
+  { message: "Provide only one reauthentication method" },
+);
 export { storefrontConfigSchema } from "./storefront-config.js";
 export { promotionConfigSchema, recommendationRequestSchema } from "./promotions.js";
 export { paymentClientEventSchema, paymentRetrySchema, paymentReconcileSchema } from "./payment-lifecycle.js";

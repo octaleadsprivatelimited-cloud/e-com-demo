@@ -22,12 +22,14 @@ import {
   Package,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Search,
   Settings,
   ShieldCheck,
   ShoppingCart,
   Smartphone,
+  Star,
   Truck,
   Users,
   X,
@@ -47,12 +49,19 @@ import { defaultStorefrontConfig, type StorefrontConfig } from "@/lib/storefront
 import { emptyPromotions, type PromotionConfig } from "@/lib/promotions";
 import { AdminInventoryWorkspace, AdminProductsWorkspace } from "./AdminProductsWorkspace";
 import { AdminIntegrationsWorkspace } from "./AdminIntegrationsWorkspace";
+import {
+  AdminCustomerOperations,
+  type CustomerOperationsTab,
+} from "./customer-ops";
 
 const nav: [string, React.ReactNode][] = [
   ["Overview", <LayoutDashboard />],
   ["Products", <Package />],
   ["Orders", <ShoppingCart />],
   ["Customers", <Users />],
+  ["Returns", <RotateCcw />],
+  ["Reviews", <Star />],
+  ["Support", <LifeBuoy />],
   ["Inventory", <Box />],
   ["Payments", <CreditCard />],
   ["Shipping", <Truck />],
@@ -781,6 +790,7 @@ export function AdminPortal() {
       new URLSearchParams(location.searchStr).get("tab") || "Overview",
     );
   }, [location.searchStr]);
+  const customerOperations = ["Customers", "Returns", "Reviews", "Support"].includes(active);
   return (
     <>
       <Toaster position="bottom-right" richColors />
@@ -793,6 +803,8 @@ export function AdminPortal() {
               ? "Manage catalog, product types, pricing and variants."
               : active === "Integrations"
                 ? "Connect and secure every external service."
+                : customerOperations
+                  ? "Serve customers with live, connected store records."
                 : "Manage your commerce operations."
         }
         nav={nav}
@@ -813,6 +825,8 @@ export function AdminPortal() {
           <AdminOrdersPanel />
         ) : active === "Inventory" ? (
           <AdminInventoryWorkspace />
+        ) : customerOperations ? (
+          <AdminCustomerOperations module={active as CustomerOperationsTab} />
         ) : (
           <ModuleView module={active} />
         )}
@@ -1641,7 +1655,7 @@ function AdminOrderDetail({
 
 function ModuleView({ module }: { module: string }) {
   const [records, setRecords] = useState<Record<string, unknown>[]>([]), [loading, setLoading] = useState(false), [loadError, setLoadError] = useState("");
-  const endpoint: Record<string, string> = { Orders: "/api/v1/admin/orders", Customers: "/api/v1/admin/customers", Inventory: "/api/v1/admin/inventory", Payments: "/api/v1/admin/payments" };
+  const endpoint: Record<string, string> = { Orders: "/api/v1/admin/orders", Inventory: "/api/v1/admin/inventory", Payments: "/api/v1/admin/payments" };
   const load = async () => {
     if (!endpoint[module]) return;
     if (!sessionStorage.getItem("commerce_access_token")) { setLoadError("Authentication required"); setRecords([]); return; }
@@ -1656,11 +1670,6 @@ function ModuleView({ module }: { module: string }) {
       ["Open orders", "42", "12 need action"],
       ["Shipped today", "18", "Across 3 couriers"],
       ["Returns", "6", "2 awaiting approval"],
-    ],
-    Customers: [
-      ["Total customers", "8,492", "+6.2% this month"],
-      ["New customers", "318", "Last 30 days"],
-      ["Repeat rate", "34.8%", "+2.1 points"],
     ],
     Inventory: [
       ["Active SKUs", "1,248", "Across 186 products"],

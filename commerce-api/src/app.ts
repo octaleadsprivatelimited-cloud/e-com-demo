@@ -38,6 +38,7 @@ import {
   returnSchema,
   returnDecisionSchema,
   supportReplySchema,
+  customerSupportReplySchema,
   supportTicketSchema,
   totpVerifySchema,
   storefrontConfigSchema,
@@ -50,6 +51,13 @@ import {
   paymentRetrySchema,
   paymentReconcileSchema,
   accountDeletionSchema,
+  adminCustomerQuerySchema,
+  adminCustomerUpdateSchema,
+  adminReturnQuerySchema,
+  adminReviewQuerySchema,
+  adminSupportQuerySchema,
+  supportInternalNoteSchema,
+  supportUpdateSchema,
 } from "./schemas.js";
 import { validate } from "./validate.js";
 import {
@@ -103,6 +111,18 @@ import {
   testIntegrationConnection,
   type IntegrationOutcome,
 } from "./integrations.js";
+import {
+  adminCustomerDetail,
+  adminReturnDetail,
+  adminReviewDetail,
+  adminSupportDetail,
+  listAdminCustomers,
+  listAdminReturns,
+  listAdminReviews,
+  listAdminSupportTickets,
+  listCustomerSegments,
+  normalizeCustomerTags,
+} from "./admin-customer-operations.js";
 
 const ok = (
   res: express.Response,
@@ -258,6 +278,12 @@ export async function createApp(overrides?: {
   app.use(
     pinoHttp({
       level: config.NODE_ENV === "test" ? "silent" : "info",
+      serializers: {
+        req: (request) => ({
+          ...request,
+          url: String(request.url || "").split("?", 1)[0],
+        }),
+      },
       redact: [
         "req.headers.authorization",
         "req.headers.cookie",
@@ -617,14 +643,108 @@ export async function createApp(overrides?: {
   app.get("/health", (_req, res) =>
     ok(res, { status: "healthy", time: new Date().toISOString() }),
   );
+  const assertAccountActive = async (
+    user: StoredUser,
+    tokenAuthVersion?: number,
+  ) => {
+    if (user.role !== "CUSTOMER") return user.authVersion || 0;
+    const persisted = persistence
+      ? await persistence.getCustomerAccountState(user.id)
+      : null;
+    const disabled = persisted
+      ? !persisted.exists || !persisted.customer || persisted.disabled
+      : Boolean(user.disabledAt);
+    const authoritativeVersion = persisted?.authVersion ?? user.authVersion ?? 0;
+    if (
+      tokenAuthVersion !== undefined &&
+      tokenAuthVersion !== authoritativeVersion
+    )
+      throw new AppError(401, "INVALID_TOKEN", "Session is invalid or expired");
+    if (disabled)
+      throw new AppError(
+        403,
+        "ACCOUNT_DISABLED",
+        "This account is disabled. Contact store support for assistance",
+      );
+    user.authVersion = authoritativeVersion;
+    if (persisted) {
+      user.disabledAt = persisted.disabledAt?.toISOString();
+      if (persisted.user) {
+        user.name = persisted.user.name;
+        user.email = persisted.user.email;
+        user.mobile = persisted.user.mobile || undefined;
+        user.passwordHash = persisted.user.passwordHash;
+      }
+    }
+    return authoritativeVersion;
+  };
+  const loadCustomerForAuth = async (
+    userId: string,
+    permissions: string[] = [],
+  ) => {
+    let user = store.users.get(userId);
+    if (persistence) {
+      const state = await persistence.getCustomerAccountState(userId);
+      if (!state.exists || !state.customer || !state.user)
+        throw new AppError(
+          401,
+          "INVALID_TOKEN",
+          "Session is invalid or expired",
+        );
+      if (!user) {
+        user = {
+          id: state.user.id,
+          name: state.user.name,
+          email: state.user.email,
+          mobile: state.user.mobile || undefined,
+          passwordHash: state.user.passwordHash,
+          role: state.user.role,
+          permissions,
+        };
+        store.users.set(user.id, user);
+      }
+      user.name = state.user.name;
+      user.email = state.user.email;
+      user.mobile = state.user.mobile || undefined;
+      user.passwordHash = state.user.passwordHash;
+      user.disabledAt = state.user.disabledAt?.toISOString();
+      user.authVersion = state.user.authVersion;
+    }
+    if (!user || user.role !== "CUSTOMER")
+      throw new AppError(
+        401,
+        "INVALID_TOKEN",
+        "Session is invalid or expired",
+      );
+    return user;
+  };
+  const cachePersistedAuthUser = async (input: {
+    email?: string;
+    mobile?: string;
+  }) => {
+    if (!persistence) return undefined;
+    const persistedUser = await persistence.findAuthUser(input);
+    if (persistedUser) store.users.set(persistedUser.id, persistedUser);
+    return persistedUser || undefined;
+  };
+  const persistNewUser = async (user: StoredUser) => {
+    try {
+      await persistence?.saveUser(user);
+    } catch (error) {
+      store.users.delete(user.id);
+      throw error;
+    }
+  };
   const issueCustomerSession = async (
     user: StoredUser,
     res: express.Response,
   ) => {
-    const principal: Principal = {
+    const authVersion = await assertAccountActive(user);
+      const principal: Principal = {
         sub: user.id,
         role: user.role,
         permissions: user.permissions,
+        authVersion,
       },
       accessToken = signAccessToken(principal, config.JWT_SECRET),
       sessionId = crypto.randomUUID(),
@@ -731,7 +851,9 @@ export async function createApp(overrides?: {
         );
       }
       mobileChallenges.delete(req.body.mobile);
-      let user = store.findUserByMobile(req.body.mobile);
+      let user =
+        store.findUserByMobile(req.body.mobile) ||
+        (await cachePersistedAuthUser({ mobile: req.body.mobile }));
       if (user && user.role !== "CUSTOMER")
         throw new AppError(
           403,
@@ -749,7 +871,7 @@ export async function createApp(overrides?: {
           role: "CUSTOMER",
           permissions: [],
         });
-        await persistence?.saveUser(user);
+        await persistNewUser(user);
       }
       return ok(
         res,
@@ -773,7 +895,9 @@ export async function createApp(overrides?: {
         req.body.credential,
         config.GOOGLE_CLIENT_ID,
       );
-      let user = store.findUser(claims.email);
+      let user =
+        store.findUser(claims.email) ||
+        (await cachePersistedAuthUser({ email: claims.email }));
       if (user && user.role !== "CUSTOMER")
         throw new AppError(
           403,
@@ -790,7 +914,7 @@ export async function createApp(overrides?: {
           role: "CUSTOMER",
           permissions: [],
         });
-        await persistence?.saveUser(user);
+        await persistNewUser(user);
       }
       return ok(
         res,
@@ -805,6 +929,15 @@ export async function createApp(overrides?: {
     validate(registerSchema),
     async (req, res, next) => {
       try {
+        if (
+          !store.findUser(req.body.email) &&
+          (await cachePersistedAuthUser({ email: req.body.email }))
+        )
+          throw new AppError(
+            409,
+            "EMAIL_EXISTS",
+            "An account already exists for this email",
+          );
         const user = store.createUser({
           name: req.body.name,
           email: req.body.email,
@@ -812,7 +945,7 @@ export async function createApp(overrides?: {
           role: "CUSTOMER",
           permissions: [],
         });
-        await persistence?.saveUser(user);
+        await persistNewUser(user);
         if (persistence)
           await persistence.queueNotification({
             userId: user.id,
@@ -838,7 +971,9 @@ export async function createApp(overrides?: {
     validate(credentials),
     async (req, res, next) => {
       try {
-        const user = store.findUser(req.body.email);
+        const user =
+          store.findUser(req.body.email) ||
+          (await cachePersistedAuthUser({ email: req.body.email }));
         if (
           !user ||
           !(await verifyPassword(user.passwordHash, req.body.password))
@@ -848,6 +983,7 @@ export async function createApp(overrides?: {
             "INVALID_CREDENTIALS",
             "Email or password is incorrect",
           );
+        const authVersion = await assertAccountActive(user);
         if (user.totpEnabled) {
           if (!user.totpSecretEncrypted)
             throw new AppError(
@@ -869,6 +1005,7 @@ export async function createApp(overrides?: {
             sub: user.id,
             role: user.role,
             permissions: user.permissions,
+            authVersion,
           },
           accessToken = signAccessToken(principal, config.JWT_SECRET),
           sessionId = crypto.randomUUID(),
@@ -949,13 +1086,17 @@ export async function createApp(overrides?: {
             "INVALID_REFRESH_TOKEN",
             "Session is invalid or expired",
           );
-        const user = store.users.get(session.userId);
+        const user =
+          decoded.role === "CUSTOMER"
+            ? await loadCustomerForAuth(session.userId, decoded.permissions)
+            : store.users.get(session.userId);
         if (!user)
           throw new AppError(
             401,
             "INVALID_REFRESH_TOKEN",
             "Session is invalid",
           );
+        await assertAccountActive(user, decoded.authVersion || 0);
         if (persistence) {
           if (!(await persistence.consumeSession(decoded.jti)))
             throw new AppError(
@@ -975,6 +1116,7 @@ export async function createApp(overrides?: {
           sub: user.id,
           role: user.role,
           permissions: user.permissions,
+          authVersion: user.authVersion || 0,
         };
         const nextSessionId = crypto.randomUUID();
         store.sessions.set(nextSessionId, {
@@ -1039,7 +1181,20 @@ export async function createApp(overrides?: {
     res.clearCookie("refresh_token", { path: "/api/v1/auth" });
     return ok(res, { loggedOut: true }, "Logged out");
   });
-  const auth = authenticate(config.JWT_SECRET);
+  const tokenAuth = authenticate(config.JWT_SECRET);
+  const auth: express.RequestHandler = (req, res, next) =>
+    tokenAuth(req, res, (error) => {
+      if (error) return next(error);
+      if (req.principal?.role !== "CUSTOMER") return next();
+      const check = async () => {
+        const user = await loadCustomerForAuth(
+          req.principal!.sub,
+          req.principal!.permissions,
+        );
+        await assertAccountActive(user, req.principal!.authVersion || 0);
+      };
+      void check().then(() => next(), next);
+    });
   app.get(
     "/api/v1/admin/storefront-config",
     auth,
@@ -1136,6 +1291,46 @@ export async function createApp(overrides?: {
           "CUSTOMER_ACCOUNT_REQUIRED",
           "Staff accounts cannot be deleted here",
         );
+      let reauthenticated = false;
+      if (req.body.password)
+        reauthenticated = await verifyPassword(
+          user.passwordHash,
+          req.body.password,
+        );
+      else if (req.body.mobileOtp && user.mobile) {
+        const challenge = mobileChallenges.get(user.mobile);
+        const submitted = crypto
+          .createHmac("sha256", config.JWT_SECRET)
+          .update(`${user.mobile}:${req.body.mobileOtp}`)
+          .digest("hex");
+        reauthenticated = Boolean(
+          challenge &&
+            challenge.expiresAt >= Date.now() &&
+            challenge.attempts < 5 &&
+            crypto.timingSafeEqual(
+              Buffer.from(challenge.hash),
+              Buffer.from(submitted),
+            ),
+        );
+        if (challenge) {
+          if (reauthenticated) mobileChallenges.delete(user.mobile);
+          else challenge.attempts++;
+        }
+      } else if (req.body.googleCredential && config.GOOGLE_CLIENT_ID) {
+        const claims = await googleVerifier(
+          req.body.googleCredential,
+          config.GOOGLE_CLIENT_ID,
+        );
+        reauthenticated =
+          claims.email_verified === true &&
+          claims.email.toLowerCase() === user.email.toLowerCase();
+      }
+      if (!reauthenticated)
+        throw new AppError(
+          401,
+          "REAUTHENTICATION_REQUIRED",
+          "Confirm your identity again before deleting the account",
+        );
       const retainedOrders = persistence
         ? (await persistence.deleteCustomerAccount(userId)).retainedOrders
         : [...store.orders.values()].filter((order) => order.userId === userId)
@@ -1149,13 +1344,18 @@ export async function createApp(overrides?: {
         if (session.userId === userId) store.sessions.delete(id);
       for (const [id, review] of store.reviews)
         if (review.userId === userId) store.reviews.delete(id);
-      for (const [id, request] of store.returns)
-        if (request.userId === userId) store.returns.delete(id);
+      for (const request of store.returns.values())
+        if (request.userId === userId) {
+          request.userId = undefined;
+          request.reason = "Personal details removed";
+          request.notes = undefined;
+        }
       for (const [id, ticket] of store.supportTickets)
         if (ticket.userId === userId) store.supportTickets.delete(id);
       store.addresses.delete(userId);
       store.wishlists.delete(userId);
       store.carts.delete(`user:${userId}`);
+      if (user.mobile) mobileChallenges.delete(user.mobile);
       store.users.delete(userId);
       store.auditLogs.unshift({
         id: crypto.randomUUID(),
@@ -1303,10 +1503,22 @@ export async function createApp(overrides?: {
       res,
       persistence
         ? await persistence.listApprovedReviews(productId)
-        : [...store.reviews.values()].filter(
-            (review) =>
-              review.productId === productId && review.status === "APPROVED",
-          ),
+        : [...store.reviews.values()]
+            .filter(
+              (review) =>
+                review.productId === productId && review.status === "APPROVED",
+            )
+            .map((review) => ({
+              id: review.id,
+              rating: review.rating,
+              title: review.title || null,
+              body: review.body,
+              verified: review.verified,
+              createdAt: review.createdAt,
+              user: {
+                name: review.verified ? "Verified customer" : "Customer",
+              },
+            })),
     );
   });
   app.get("/api/v1/account/reviews", auth, async (req, res) => {
@@ -1348,6 +1560,13 @@ export async function createApp(overrides?: {
     auth,
     validate(reviewSchema),
     async (req, res) => {
+      if (persistence)
+        return ok(
+          res,
+          await persistence.saveReview(req.principal!.sub, req.body),
+          "Review submitted for moderation",
+          201,
+        );
       store.getProduct(req.body.productId);
       const verified = [...store.orders.values()].some(
         (order) =>
@@ -1364,13 +1583,6 @@ export async function createApp(overrides?: {
             }
           }),
       );
-      if (persistence)
-        return ok(
-          res,
-          await persistence.saveReview(req.principal!.sub, req.body, verified),
-          "Review submitted for moderation",
-          201,
-        );
       if (
         [...store.reviews.values()].some(
           (review) =>
@@ -1469,6 +1681,39 @@ export async function createApp(overrides?: {
         adminProductDetailDto(store.getProduct(String(req.params.id))),
       ),
   );
+  const customerReturnDto = (item: {
+    id: string;
+    orderId: string;
+    reason: string;
+    notes?: string | null;
+    status: string;
+    createdAt: string | Date;
+    updatedAt?: string | Date;
+    items?: Array<{
+      id: string;
+      variantId: string;
+      name: string;
+      sku: string;
+      quantity: number;
+      condition?: string | null;
+    }>;
+  }) => ({
+    id: item.id,
+    orderId: item.orderId,
+    reason: item.reason,
+    notes: item.notes || null,
+    status: item.status,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt || item.createdAt,
+    items: (item.items || []).map((entry) => ({
+      id: entry.id,
+      variantId: entry.variantId,
+      name: entry.name,
+      sku: entry.sku,
+      quantity: entry.quantity,
+      condition: entry.condition || null,
+    })),
+  });
   app.post(
     "/api/v1/admin/products",
     auth,
@@ -2553,6 +2798,34 @@ export async function createApp(overrides?: {
     auth,
     validate(returnSchema),
     async (req, res) => {
+      if (persistence) {
+        const created = await persistence.createReturnRequest(
+          req.principal!.sub,
+          req.body,
+        );
+        await persistence.refreshOrder(store, req.body.orderId);
+        const request = {
+          id: created.id,
+          orderId: created.orderId,
+          userId: created.userId || undefined,
+          reason: created.reason,
+          notes: created.notes || undefined,
+          status: created.status,
+          createdAt: created.createdAt.toISOString(),
+          updatedAt: created.updatedAt.toISOString(),
+          items: created.items.map((item) => ({
+            id: item.id,
+            orderItemId: item.orderItemId,
+            variantId: item.orderItem.variantId,
+            name: item.orderItem.name,
+            sku: item.orderItem.sku,
+            quantity: item.quantity,
+            condition: item.condition || undefined,
+          })),
+        };
+        store.returns.set(request.id, request);
+        return ok(res, customerReturnDto(request), "Return requested", 201);
+      }
       const order = store.orders.get(req.body.orderId);
       if (!order || order.userId !== req.principal!.sub)
         throw new AppError(404, "ORDER_NOT_FOUND", "Order not found");
@@ -2562,40 +2835,138 @@ export async function createApp(overrides?: {
           "RETURN_NOT_AVAILABLE",
           "Returns are available only after delivery",
         );
+      const selections = req.body.items || order.lines.map((line) => ({
+        variantId: line.variantId,
+        quantity: line.quantity,
+      }));
+      const seen = new Set<string>();
+      const items = selections.map(
+        (selection: { variantId: string; quantity: number }) => {
+          if (seen.has(selection.variantId))
+            throw new AppError(
+              400,
+              "DUPLICATE_RETURN_ITEM",
+              "Each product variant can be selected only once",
+            );
+          seen.add(selection.variantId);
+          const line = order.lines.find(
+            (candidate) => candidate.variantId === selection.variantId,
+          );
+          if (!line || selection.quantity > line.quantity)
+            throw new AppError(
+              422,
+              "INVALID_RETURN_QUANTITY",
+              "Return quantity exceeds the purchased quantity",
+            );
+          return {
+            id: crypto.randomUUID(),
+            orderItemId: selection.variantId,
+            variantId: selection.variantId,
+            name: line.name,
+            sku: line.sku,
+            quantity: selection.quantity,
+          };
+        },
+      );
+      if (
+        [...store.returns.values()].some(
+          (item) => item.orderId === order.id && item.status !== "REJECTED",
+        )
+      )
+        throw new AppError(
+          409,
+          "RETURN_ALREADY_EXISTS",
+          "A return is already active for this order",
+        );
+      const createdAt = new Date().toISOString();
       const request = {
         id: crypto.randomUUID(),
         orderId: order.id,
         userId: req.principal!.sub,
         reason: req.body.reason,
         status: "REQUESTED",
-        createdAt: new Date().toISOString(),
+        createdAt,
+        updatedAt: createdAt,
+        items,
       };
-      await persistence?.saveReturn(request);
-      await persistence?.transitionOrder(
-        order.id,
-        order.status,
-        "RETURN_REQUESTED",
-        req.principal!.sub,
-        "CUSTOMER",
-      );
-      store.returns.set(request.id, request);
       store.transitionOrder(
         order.id,
         "RETURN_REQUESTED",
         req.principal!.sub,
         "CUSTOMER",
       );
-      return ok(res, request, "Return requested", 201);
+      store.returns.set(request.id, request);
+      return ok(res, customerReturnDto(request), "Return requested", 201);
     },
   );
-  app.get("/api/v1/account/returns", auth, (req, res) =>
-    ok(
+  app.get("/api/v1/account/returns", auth, async (req, res) => {
+    if (persistence) {
+      const items = await persistence.listCustomerReturns(req.principal!.sub);
+      return ok(
+        res,
+        items.map((item) => customerReturnDto({
+          id: item.id,
+          orderId: item.orderId,
+          reason: item.reason,
+          notes: item.notes || null,
+          status: item.status,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+          items: item.items.map((entry) => ({
+            id: entry.id,
+            variantId: entry.orderItem.variantId,
+            name: entry.orderItem.name,
+            sku: entry.orderItem.sku,
+            quantity: entry.quantity,
+            condition: entry.condition || null,
+          })),
+        })),
+      );
+    }
+    return ok(
       res,
-      [...store.returns.values()].filter(
-        (item) => item.userId === req.principal!.sub,
-      ),
-    ),
-  );
+      [...store.returns.values()]
+        .filter((item) => item.userId === req.principal!.sub)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .slice(0, 100)
+        .map(customerReturnDto),
+    );
+  });
+  const customerSupportDto = (ticket: {
+    id: string;
+    number: string;
+    subject: string;
+    priority: string;
+    status: string;
+    createdAt: string | Date;
+    updatedAt?: string | Date;
+    messages: Array<{
+      id: string;
+      body: string;
+      internal: boolean;
+      createdAt: string | Date;
+    }>;
+  }) => ({
+    id: ticket.id,
+    number: ticket.number,
+    subject: ticket.subject,
+    priority: ticket.priority,
+    status: ticket.status,
+    createdAt: ticket.createdAt,
+    updatedAt: ticket.updatedAt || ticket.createdAt,
+    messages: ticket.messages
+      .filter((message) => !message.internal)
+      .slice(-200)
+      .sort(
+        (left, right) =>
+          new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime(),
+      )
+      .map((message) => ({
+        id: message.id,
+        body: message.body,
+        createdAt: message.createdAt,
+      })),
+  });
   app.post(
     "/api/v1/account/support",
     auth,
@@ -2604,14 +2975,19 @@ export async function createApp(overrides?: {
       if (persistence)
         return ok(
           res,
-          await persistence.createSupportTicket(req.principal!.sub, req.body),
+          customerSupportDto(
+            await persistence.createSupportTicket(req.principal!.sub, req.body),
+          ),
           "Support ticket created",
           201,
         );
       const createdAt = new Date().toISOString(),
         ticket = {
           id: crypto.randomUUID(),
-          number: `SUP-${Date.now().toString(36).toUpperCase()}`,
+          number: `SUP-${Date.now().toString(36).toUpperCase()}-${crypto
+            .randomBytes(3)
+            .toString("hex")
+            .toUpperCase()}`,
           userId: req.principal!.sub,
           subject: req.body.subject,
           priority: req.body.priority,
@@ -2628,33 +3004,43 @@ export async function createApp(overrides?: {
           ],
         };
       store.supportTickets.set(ticket.id, ticket);
-      return ok(res, ticket, "Support ticket created", 201);
+      return ok(res, customerSupportDto(ticket), "Support ticket created", 201);
     },
   );
   app.get("/api/v1/account/support", auth, async (req, res) =>
     ok(
       res,
       persistence
-        ? await persistence.listSupportTickets(req.principal!.sub)
-        : [...store.supportTickets.values()].filter(
-            (ticket) => ticket.userId === req.principal!.sub,
-          ),
+        ? (await persistence.listSupportTickets(req.principal!.sub)).map(
+            customerSupportDto,
+          )
+        : [...store.supportTickets.values()]
+            .filter((ticket) => ticket.userId === req.principal!.sub)
+            .sort((left, right) =>
+              String(right.updatedAt || right.createdAt).localeCompare(
+                String(left.updatedAt || left.createdAt),
+              ),
+            )
+            .slice(0, 50)
+            .map(customerSupportDto),
     ),
   );
   app.post(
     "/api/v1/account/support/:id/replies",
     auth,
-    validate(supportReplySchema),
+    validate(customerSupportReplySchema),
     async (req, res) => {
       if (persistence)
         return ok(
           res,
-          await persistence.replySupportTicket(
-            String(req.params.id),
-            req.principal!.sub,
-            req.body.message,
-            req.body.status,
-            req.principal!.sub,
+          customerSupportDto(
+            await persistence.replySupportTicket(
+              String(req.params.id),
+              req.principal!.sub,
+              req.body.message,
+              undefined,
+              req.principal!.sub,
+            ),
           ),
           "Reply added",
           201,
@@ -2662,15 +3048,17 @@ export async function createApp(overrides?: {
       const ticket = store.supportTickets.get(String(req.params.id));
       if (!ticket || ticket.userId !== req.principal!.sub)
         throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
+      const repliedAt = new Date().toISOString();
       ticket.messages.push({
         id: crypto.randomUUID(),
         authorId: req.principal!.sub,
         body: req.body.message,
         internal: false,
-        createdAt: new Date().toISOString(),
+        createdAt: repliedAt,
       });
-      ticket.status = req.body.status || "OPEN";
-      return ok(res, ticket, "Reply added", 201);
+      ticket.status = "OPEN";
+      ticket.updatedAt = repliedAt;
+      return ok(res, customerSupportDto(ticket), "Reply added", 201);
     },
   );
   app.get(
@@ -2853,20 +3241,132 @@ export async function createApp(overrides?: {
     "/api/v1/admin/customers",
     auth,
     authorize("customers:read"),
-    (_req, res) =>
+    validate(adminCustomerQuerySchema, "query"),
+    async (req, res) =>
       ok(
         res,
-        [...store.users.values()]
-          .filter((user) => user.role === "CUSTOMER")
-          .map((user) => ({
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            orders: [...store.orders.values()].filter(
-              (order) => order.userId === user.id,
-            ).length,
-          })),
+        persistence
+          ? await persistence.listAdminCustomersPage(req.query as never)
+          : listAdminCustomers(
+              [...store.users.values()],
+              [...store.orders.values()],
+              req.query as never,
+            ),
       ),
+  );
+  app.get(
+    "/api/v1/admin/customer-segments",
+    auth,
+    authorize("customers:read"),
+    async (_req, res) =>
+      ok(
+        res,
+        persistence
+          ? await persistence.listAdminCustomerSegments()
+          : listCustomerSegments(
+              [...store.users.values()],
+              [...store.orders.values()],
+            ),
+      ),
+  );
+  app.get(
+    "/api/v1/admin/customers/:id",
+    auth,
+    authorize("customers:read"),
+    async (req, res) =>
+      ok(
+        res,
+        persistence
+          ? await persistence.getAdminCustomerDetail(String(req.params.id))
+          : adminCustomerDetail(store, String(req.params.id)),
+      ),
+  );
+  app.patch(
+    "/api/v1/admin/customers/:id",
+    auth,
+    authorize("customers:update"),
+    validate(adminCustomerUpdateSchema),
+    async (req, res) => {
+      const id = String(req.params.id);
+      if (persistence) {
+        const updated = await persistence.updateAdminCustomer(
+          id,
+          req.body,
+          req.principal!.sub,
+        );
+        const mirror = store.users.get(id);
+        if (mirror?.role === "CUSTOMER") {
+          mirror.tags = updated.tags;
+          mirror.note = updated.note || undefined;
+          mirror.marketingConsent = updated.marketingConsent;
+          mirror.marketingConsentUpdatedAt =
+            updated.marketingConsentUpdatedAt?.toISOString();
+          mirror.disabledAt = updated.disabledAt?.toISOString();
+          mirror.authVersion = updated.authVersion;
+          mirror.updatedAt = updated.updatedAt.toISOString();
+        }
+        if (req.body.accountStatus === "DISABLED")
+          for (const [sessionId, session] of store.sessions)
+            if (session.userId === id) store.sessions.delete(sessionId);
+        return ok(
+          res,
+          await persistence.getAdminCustomerDetail(id),
+          "Customer updated",
+        );
+      }
+      const user = store.users.get(id);
+      if (!user || user.role !== "CUSTOMER")
+        throw new AppError(404, "CUSTOMER_NOT_FOUND", "Customer not found");
+      const before = {
+        tags: [...(user.tags || [])],
+        notePresent: Boolean(user.note),
+        marketingConsent: Boolean(user.marketingConsent),
+        accountStatus: user.disabledAt ? "DISABLED" : "ACTIVE",
+      };
+      const now = new Date().toISOString();
+      if (req.body.tags !== undefined)
+        user.tags = normalizeCustomerTags(req.body.tags);
+      if (req.body.note !== undefined)
+        user.note = req.body.note || undefined;
+      if (req.body.marketingConsent !== undefined) {
+        const changed = user.marketingConsent !== req.body.marketingConsent;
+        user.marketingConsent = req.body.marketingConsent;
+        if (changed)
+          user.marketingConsentUpdatedAt =
+            now;
+      }
+      if (req.body.accountStatus !== undefined)
+        user.disabledAt = req.body.accountStatus === "DISABLED" ? now : undefined;
+      if (
+        req.body.accountStatus === "DISABLED" &&
+        before.accountStatus === "ACTIVE"
+      )
+        user.authVersion = (user.authVersion || 0) + 1;
+      user.updatedAt = now;
+      if (req.body.accountStatus === "DISABLED")
+        for (const [sessionId, session] of store.sessions)
+          if (session.userId === id) store.sessions.delete(sessionId);
+      store.auditLogs.push({
+          id: crypto.randomUUID(),
+          actor: req.principal!.sub,
+          action: "customer.updated",
+          resource: "customer",
+          resourceId: id,
+          before,
+          after: {
+            tags: user.tags || [],
+            notePresent: Boolean(user.note),
+            marketingConsent: Boolean(user.marketingConsent),
+            accountStatus: user.disabledAt ? "DISABLED" : "ACTIVE",
+          },
+          createdAt: now,
+        });
+      return ok(
+        res,
+        adminCustomerDetail(store, id),
+        "Customer updated",
+      );
+    },
   );
   app.get(
     "/api/v1/admin/inventory",
@@ -3023,19 +3523,127 @@ export async function createApp(overrides?: {
   app.get(
     "/api/v1/admin/returns",
     auth,
-    authorize("orders:read"),
-    (_req, res) => ok(res, [...store.returns.values()]),
+    authorize("returns:read"),
+    validate(adminReturnQuerySchema, "query"),
+    async (req, res) =>
+      ok(
+        res,
+        persistence
+          ? await persistence.listAdminReturnsPage(req.query as never)
+          : listAdminReturns(store, req.query as never),
+      ),
+  );
+  app.get(
+    "/api/v1/admin/returns/:id",
+    auth,
+    authorize("returns:read"),
+    async (req, res) =>
+      ok(
+        res,
+        persistence
+          ? await persistence.getAdminReturnDetail(String(req.params.id))
+          : adminReturnDetail(store, String(req.params.id)),
+      ),
+  );
+  app.patch(
+    "/api/v1/admin/returns/:id",
+    auth,
+    authorize("returns:update"),
+    validate(returnDecisionSchema),
+    async (req, res) => {
+      const id = String(req.params.id);
+      if (persistence) {
+        const decided = await persistence.decideReturn(
+          id,
+          req.body.status,
+          req.body.notes,
+          req.principal!.sub,
+        );
+        if (decided) {
+          await persistence.refreshOrder(store, decided.orderId);
+          const mirror = store.returns.get(id);
+          if (mirror) {
+            mirror.status = decided.status;
+            mirror.notes = decided.notes || undefined;
+            mirror.updatedAt = decided.updatedAt.toISOString();
+          }
+        }
+        return ok(
+          res,
+          await persistence.getAdminReturnDetail(id),
+          `Return ${req.body.status.toLowerCase()}`,
+        );
+      }
+      const item = store.returns.get(id);
+      if (!item)
+        throw new AppError(404, "RETURN_NOT_FOUND", "Return request not found");
+      const receiving = req.body.status === "RECEIVED";
+      const expectedReturnStatus = receiving ? "APPROVED" : "REQUESTED";
+      if (item.status !== expectedReturnStatus)
+        throw new AppError(
+          409,
+          receiving ? "RETURN_NOT_APPROVED" : "RETURN_ALREADY_DECIDED",
+          receiving
+            ? "Only an approved return can be marked received"
+            : "Return request is no longer pending",
+        );
+      const before = item.status;
+      const order = store.orders.get(item.orderId);
+      if (!order)
+        throw new AppError(404, "ORDER_NOT_FOUND", "Order not found");
+      store.transitionOrder(
+        order.id,
+        receiving
+          ? "RETURNED"
+          : req.body.status === "APPROVED"
+            ? "RETURN_APPROVED"
+            : "DELIVERED",
+        req.principal!.sub,
+        "ADMIN",
+      );
+      item.status = req.body.status;
+      item.notes = req.body.notes;
+      item.updatedAt = new Date().toISOString();
+      store.auditLogs.push({
+          id: crypto.randomUUID(),
+          actor: req.principal!.sub,
+          action: "return.decided",
+          resource: "return_request",
+          resourceId: id,
+          before: { status: before },
+          after: { status: item.status, notesPresent: Boolean(item.notes) },
+          createdAt: item.updatedAt,
+        });
+      return ok(
+        res,
+        adminReturnDetail(store, id),
+        `Return ${req.body.status.toLowerCase()}`,
+      );
+    },
   );
   app.get(
     "/api/v1/admin/reviews",
     auth,
     authorize("reviews:read"),
-    async (_req, res) =>
+    validate(adminReviewQuerySchema, "query"),
+    async (req, res) =>
       ok(
         res,
         persistence
-          ? await persistence.listReviews()
-          : [...store.reviews.values()],
+          ? await persistence.listAdminReviewsPage(req.query as never)
+          : listAdminReviews(store, req.query as never),
+      ),
+  );
+  app.get(
+    "/api/v1/admin/reviews/:id",
+    auth,
+    authorize("reviews:read"),
+    async (req, res) =>
+      ok(
+        res,
+        persistence
+          ? await persistence.getAdminReviewDetail(String(req.params.id))
+          : adminReviewDetail(store, String(req.params.id)),
       ),
   );
   app.patch(
@@ -3044,33 +3652,60 @@ export async function createApp(overrides?: {
     authorize("reviews:update"),
     validate(reviewModerationSchema),
     async (req, res) => {
-      if (persistence)
+      const id = String(req.params.id);
+      if (persistence) {
+        await persistence.moderateReview(
+          id,
+          req.body.status,
+          req.principal!.sub,
+        );
         return ok(
           res,
-          await persistence.moderateReview(
-            String(req.params.id),
-            req.body.status,
-            req.principal!.sub,
-          ),
+          await persistence.getAdminReviewDetail(id),
           "Review moderated",
         );
-      const review = store.reviews.get(String(req.params.id));
+      }
+      const review = store.reviews.get(id);
       if (!review)
         throw new AppError(404, "REVIEW_NOT_FOUND", "Review not found");
+      const before = review.status;
       review.status = req.body.status;
-      return ok(res, review, "Review moderated");
+      store.auditLogs.push({
+        id: crypto.randomUUID(),
+        actor: req.principal!.sub,
+        action: "review.moderated",
+        resource: "review",
+        resourceId: id,
+        before: { status: before },
+        after: { status: review.status },
+        createdAt: new Date().toISOString(),
+      });
+      return ok(res, adminReviewDetail(store, id), "Review moderated");
     },
   );
   app.get(
     "/api/v1/admin/support",
     auth,
     authorize("support:read"),
-    async (_req, res) =>
+    validate(adminSupportQuerySchema, "query"),
+    async (req, res) =>
       ok(
         res,
         persistence
-          ? await persistence.listSupportTickets()
-          : [...store.supportTickets.values()],
+          ? await persistence.listAdminSupportPage(req.query as never)
+          : listAdminSupportTickets(store, req.query as never),
+      ),
+  );
+  app.get(
+    "/api/v1/admin/support/:id",
+    auth,
+    authorize("support:read"),
+    async (req, res) =>
+      ok(
+        res,
+        persistence
+          ? await persistence.getAdminSupportDetail(String(req.params.id))
+          : adminSupportDetail(store, String(req.params.id)),
       ),
   );
   app.post(
@@ -3079,50 +3714,126 @@ export async function createApp(overrides?: {
     authorize("support:update"),
     validate(supportReplySchema),
     async (req, res) => {
-      if (persistence)
+      const id = String(req.params.id);
+      if (persistence) {
+        await persistence.replySupportTicket(
+          id,
+          req.principal!.sub,
+          req.body.message,
+          req.body.status,
+        );
         return ok(
           res,
-          await persistence.replySupportTicket(
-            String(req.params.id),
-            req.principal!.sub,
-            req.body.message,
-            req.body.status,
-          ),
+          await persistence.getAdminSupportDetail(id),
           "Reply added",
           201,
         );
-      const ticket = store.supportTickets.get(String(req.params.id));
+      }
+      const ticket = store.supportTickets.get(id);
       if (!ticket)
         throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
+      const now = new Date().toISOString();
       ticket.messages.push({
         id: crypto.randomUUID(),
         authorId: req.principal!.sub,
         body: req.body.message,
         internal: false,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
       });
       ticket.status = req.body.status || "WAITING_CUSTOMER";
-      return ok(res, ticket, "Reply added", 201);
+      ticket.updatedAt = now;
+      store.auditLogs.push({
+        id: crypto.randomUUID(),
+        actor: req.principal!.sub,
+        action: "support.replied",
+        resource: "support_ticket",
+        resourceId: id,
+        after: { status: ticket.status, internal: false },
+        createdAt: now,
+      });
+      return ok(res, adminSupportDetail(store, id), "Reply added", 201);
+    },
+  );
+  app.post(
+    "/api/v1/admin/support/:id/internal-notes",
+    auth,
+    authorize("support:update"),
+    validate(supportInternalNoteSchema),
+    async (req, res) => {
+      const id = String(req.params.id);
+      if (persistence) {
+        await persistence.replySupportTicket(
+          id,
+          req.principal!.sub,
+          req.body.message,
+          undefined,
+          undefined,
+          true,
+        );
+        return ok(
+          res,
+          await persistence.getAdminSupportDetail(id),
+          "Internal note added",
+          201,
+        );
+      }
+      const ticket = store.supportTickets.get(id);
+      if (!ticket)
+        throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
+      const now = new Date().toISOString();
+      ticket.messages.push({
+        id: crypto.randomUUID(),
+        authorId: req.principal!.sub,
+        body: req.body.message,
+        internal: true,
+        createdAt: now,
+      });
+      ticket.updatedAt = now;
+      store.auditLogs.push({
+        id: crypto.randomUUID(),
+        actor: req.principal!.sub,
+        action: "support.internal_note_added",
+        resource: "support_ticket",
+        resourceId: id,
+        after: { status: ticket.status, internal: true },
+        createdAt: now,
+      });
+      return ok(res, adminSupportDetail(store, id), "Internal note added", 201);
     },
   );
   app.patch(
-    "/api/v1/admin/returns/:id",
+    "/api/v1/admin/support/:id",
     auth,
-    authorize("orders:update"),
-    validate(returnDecisionSchema),
+    authorize("support:update"),
+    validate(supportUpdateSchema),
     async (req, res) => {
-      const item = store.returns.get(String(req.params.id));
-      if (!item)
-        throw new AppError(404, "RETURN_NOT_FOUND", "Return request not found");
-      if (item.status !== "REQUESTED")
-        throw new AppError(
-          409,
-          "RETURN_ALREADY_DECIDED",
-          "Return request is no longer pending",
+      const id = String(req.params.id);
+      if (persistence) {
+        await persistence.updateSupportTicket(id, req.body, req.principal!.sub);
+        return ok(
+          res,
+          await persistence.getAdminSupportDetail(id),
+          "Support ticket updated",
         );
-      await persistence?.decideReturn(item.id, req.body.status, req.body.notes);
-      item.status = req.body.status;
-      return ok(res, item, `Return ${req.body.status.toLowerCase()}`);
+      }
+      const ticket = store.supportTickets.get(id);
+      if (!ticket)
+        throw new AppError(404, "TICKET_NOT_FOUND", "Support ticket not found");
+      const before = { status: ticket.status, priority: ticket.priority };
+      if (req.body.status) ticket.status = req.body.status;
+      if (req.body.priority) ticket.priority = req.body.priority;
+      ticket.updatedAt = new Date().toISOString();
+      store.auditLogs.push({
+        id: crypto.randomUUID(),
+        actor: req.principal!.sub,
+        action: "support.updated",
+        resource: "support_ticket",
+        resourceId: id,
+        before,
+        after: { status: ticket.status, priority: ticket.priority },
+        createdAt: ticket.updatedAt,
+      });
+      return ok(res, adminSupportDetail(store, id), "Support ticket updated");
     },
   );
   app.post(
@@ -3143,17 +3854,21 @@ export async function createApp(overrides?: {
         );
       const operationKey = `refund:${order.id}:${key}`;
       const reservation = persistence
-        ? await persistence.beginRefund(
+          ? await persistence.beginRefund(
             order.id,
             req.body.amount,
             operationKey,
             req.body.reason,
+            req.principal!.sub,
+            req.body.returnRequestId,
           )
         : store.beginRefund(
             order.id,
             req.body.amount,
             operationKey,
             req.body.reason,
+            req.principal!.sub,
+            req.body.returnRequestId,
           );
       const operationResponse = async () => {
         await persistence?.refreshOrder(store, orderId);
@@ -3186,7 +3901,10 @@ export async function createApp(overrides?: {
           reservation.provider!,
         ).refund({
           paymentId: reservation.externalId!,
-          amount: { amount: req.body.amount, currency: "INR" },
+          amount: {
+            amount: req.body.amount,
+            currency: order.payment?.currency || "INR",
+          },
           idempotencyKey: operationKey,
         });
       } catch (error) {

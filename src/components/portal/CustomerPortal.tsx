@@ -23,6 +23,8 @@ import {
 } from "@/lib/commerce-api";
 import { money } from "@/data/commerce";
 import { toast, Toaster } from "sonner";
+import { CustomerReturnsWorkspace } from "./customer-service/CustomerReturnsWorkspace";
+import { CustomerSupportWorkspace } from "./customer-service/CustomerSupportWorkspace";
 
 const nav: [string, React.ReactNode][] = [
   ["My overview", <LayoutDashboard />],
@@ -643,61 +645,6 @@ function Addresses() {
   );
 }
 
-function Support() {
-  const [version, setVersion] = useState(0);
-  return (
-    <>
-      <form
-        className="panel form-panel"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          const data = new FormData(event.currentTarget);
-          try {
-            await commerceApi("/api/v1/account/support", {
-              method: "POST",
-              body: JSON.stringify({
-                subject: data.get("subject"),
-                message: data.get("message"),
-                priority: "NORMAL",
-              }),
-            });
-            toast.success("Support ticket created");
-            event.currentTarget.reset();
-            setVersion((value) => value + 1);
-          } catch (error) {
-            toast.error(
-              error instanceof Error
-                ? error.message
-                : "Ticket could not be created",
-            );
-          }
-        }}
-      >
-        <div className="panel-head">
-          <div>
-            <h2>Contact care team</h2>
-            <p>We keep the complete conversation history</p>
-          </div>
-        </div>
-        <label>
-          Subject
-          <input name="subject" required />
-        </label>
-        <label>
-          How can we help?
-          <textarea name="message" required />
-        </label>
-        <button className="primary">Create ticket</button>
-      </form>
-      <Records
-        key={version}
-        endpoint="/api/v1/account/support"
-        empty="No support tickets"
-      />
-    </>
-  );
-}
-
 function ProfileSettings() {
   const [confirmation, setConfirmation] = useState(""),
     [busy, setBusy] = useState(false);
@@ -853,9 +800,9 @@ export function CustomerPortal() {
     ) : active === "Reviews" ? (
       <ReviewsPanel />
     ) : active === "Returns" ? (
-      <Records endpoint="/api/v1/account/returns" empty="No return requests" />
+      <CustomerReturnsWorkspace />
     ) : active === "Support" ? (
-      <Support />
+      <CustomerSupportWorkspace />
     ) : active === "Profile settings" ? (
       <ProfileSettings />
     ) : (

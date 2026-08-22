@@ -17,6 +17,13 @@ export const validate =
           result.error.flatten(),
         ),
       );
-    (req as unknown as Record<string, unknown>)[source] = result.data;
+    if (source === "query")
+      Object.defineProperty(req, "query", {
+        value: result.data,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      });
+    else (req as unknown as Record<string, unknown>)[source] = result.data;
     next();
   };

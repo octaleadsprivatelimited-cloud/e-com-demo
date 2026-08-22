@@ -65,31 +65,39 @@ enum CouponType {
 }
 
 model User {
-  id              String               @id @default(uuid()) @db.Uuid
-  email           String               @unique
-  mobile          String?              @unique
-  passwordHash    String
-  totpSecret      Bytes?
-  totpEnabled     Boolean              @default(false)
-  name            String
-  role            UserRole             @default(CUSTOMER)
-  verifiedAt      DateTime?
-  disabledAt      DateTime?
-  createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
-  addresses       Address[]
-  orders          Order[]
-  reviews         Review[]
-  auditLogs       AuditLog[]
-  sessions        Session[]
-  carts           Cart[]
-  wishlistItems   WishlistItem[]
-  couponUsages    CouponUsage[]
-  returnRequests  ReturnRequest[]
-  notifications   Notification[]
-  supportTickets  SupportTicket[]
-  supportMessages SupportMessage[]
-  roleAssignments UserRoleAssignment[]
+  id                        String               @id @default(uuid()) @db.Uuid
+  email                     String               @unique
+  mobile                    String?              @unique
+  passwordHash              String
+  totpSecret                Bytes?
+  totpEnabled               Boolean              @default(false)
+  name                      String
+  role                      UserRole             @default(CUSTOMER)
+  verifiedAt                DateTime?
+  disabledAt                DateTime?
+  authVersion               Int                  @default(0)
+  tags                      String[]             @default([])
+  note                      String?
+  marketingConsent          Boolean              @default(false)
+  marketingConsentUpdatedAt DateTime?
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+  addresses                 Address[]
+  orders                    Order[]
+  reviews                   Review[]
+  auditLogs                 AuditLog[]
+  sessions                  Session[]
+  carts                     Cart[]
+  wishlistItems             WishlistItem[]
+  couponUsages              CouponUsage[]
+  returnRequests            ReturnRequest[]
+  notifications             Notification[]
+  supportTickets            SupportTicket[]
+  supportMessages           SupportMessage[]
+  roleAssignments           UserRoleAssignment[]
+
+  @@index([role, disabledAt, createdAt])
+  @@index([role, marketingConsent, createdAt])
 }
 
 model Session {
@@ -244,14 +252,14 @@ model Inventory {
 }
 
 model InventoryMovement {
-  id          String    @id @default(uuid()) @db.Uuid
-  inventoryId String    @db.Uuid
-  quantity    Int
-  reason      String
-  referenceId String?
-  idempotencyKey String? @unique
-  createdAt   DateTime  @default(now())
-  inventory   Inventory @relation(fields: [inventoryId], references: [id])
+  id             String    @id @default(uuid()) @db.Uuid
+  inventoryId    String    @db.Uuid
+  quantity       Int
+  reason         String
+  referenceId    String?
+  idempotencyKey String?   @unique
+  createdAt      DateTime  @default(now())
+  inventory      Inventory @relation(fields: [inventoryId], references: [id])
 
   @@index([inventoryId, createdAt])
 }
@@ -437,6 +445,7 @@ model ReturnRequest {
   refund    Refund?
 
   @@index([orderId, status])
+  @@index([status, createdAt])
 }
 
 model ReturnItem {
@@ -492,6 +501,8 @@ model Review {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([productId, userId])
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
 }
 
 model Notification {
