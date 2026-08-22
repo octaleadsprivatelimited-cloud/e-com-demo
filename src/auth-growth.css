@@ -1,1 +1,195 @@
-.quick-login{margin:26px 0 20px}.quick-login>div:first-child{min-height:42px;display:flex;justify-content:center}.auth-divider{display:flex;align-items:center;gap:12px;margin:18px 0;color:#777;font-size:9px;text-transform:uppercase}.auth-divider:before,.auth-divider:after{content:"";height:1px;background:#dedfd9;flex:1}.mobile-login{display:grid;grid-template-columns:1fr auto;gap:8px}.mobile-login:has(input+input){grid-template-columns:1fr 110px auto}.mobile-login input{height:43px;border:1px solid #d7dad5;background:white;padding:9px 12px;font-size:11px}.mobile-login button{height:43px;background:#18201d;color:white;padding:0 16px;font-size:9px}.mobile-login button:disabled{opacity:.45}.otp-change{display:block;margin:10px auto 0;text-decoration:underline;font-size:9px;color:#666}@media(max-width:600px){.mobile-login,.mobile-login:has(input+input){grid-template-columns:1fr}.mobile-login button{width:100%}}
+.quick-login {
+  margin: 26px 0 20px;
+}
+
+.google-login-shell {
+  min-height: 42px;
+}
+
+.google-login-slot {
+  min-height: 42px;
+  display: flex;
+  justify-content: center;
+  max-width: 100%;
+  transition: opacity 160ms ease;
+}
+
+.google-login-slot > div,
+.google-login-slot iframe {
+  max-width: 100%;
+}
+
+.google-login-shell.is-authenticating .google-login-slot {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.google-login-shell.is-unavailable,
+.google-login-shell.is-unavailable .google-login-slot {
+  min-height: 0;
+}
+
+.auth-provider-note {
+  color: #6c746f;
+  font-size: 9px;
+  line-height: 1.45;
+  margin: 6px 0 14px;
+  text-align: center;
+}
+
+.auth-provider-note.is-error {
+  color: #a62e25;
+}
+
+.google-login-retry {
+  display: block;
+  margin: -5px auto 14px;
+  color: #34453e;
+  font-size: 9px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.google-login-retry:focus-visible {
+  outline: 2px solid #34453e;
+  outline-offset: 4px;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  color: #777;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  height: 1px;
+  background: #dedfd9;
+  flex: 1;
+}
+
+.auth-email-divider {
+  margin-top: 24px;
+  margin-bottom: 0;
+}
+
+.mobile-login {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.mobile-login.sent,
+.mobile-login:has(input + input) {
+  grid-template-columns: 1fr 120px auto;
+}
+
+.mobile-login input {
+  min-width: 0;
+  height: 43px;
+  border: 1px solid #d7dad5;
+  background: white;
+  padding: 9px 12px;
+  font-size: 11px;
+}
+
+.mobile-login input:disabled {
+  color: #525a55;
+  background: #f1f0eb;
+  opacity: 1;
+}
+
+.mobile-login input[aria-invalid="true"],
+.auth-page form input[aria-invalid="true"] {
+  border-color: #b94334;
+  box-shadow: 0 0 0 1px #b94334;
+}
+
+.mobile-login button {
+  height: 43px;
+  background: #18201d;
+  color: white;
+  padding: 0 16px;
+  font-size: 9px;
+}
+
+.mobile-login button:disabled,
+.auth-page form button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.auth-hint,
+.auth-field-error {
+  display: block;
+  font-size: 8px;
+  line-height: 1.45;
+  margin-top: 6px;
+}
+
+.auth-hint {
+  color: #6c746f;
+}
+
+.auth-field-error {
+  color: #a62e25;
+}
+
+.auth-notice {
+  border: 1px solid #dca7a0;
+  background: #faeae7;
+  color: #7d241d;
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 11px 13px;
+  margin-top: 20px;
+}
+
+.otp-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.otp-controls > div {
+  display: flex;
+  gap: 14px;
+}
+
+.otp-change {
+  display: inline-block;
+  margin-top: 8px;
+  text-decoration: underline;
+  font-size: 9px;
+  color: #666;
+}
+
+.otp-change:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  text-decoration: none;
+}
+
+@media (max-width: 600px) {
+  .mobile-login,
+  .mobile-login.sent,
+  .mobile-login:has(input + input) {
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-login button {
+    width: 100%;
+  }
+
+  .otp-controls {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+}

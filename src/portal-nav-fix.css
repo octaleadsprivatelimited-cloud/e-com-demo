@@ -224,8 +224,152 @@
 .invoice-identity textarea {
   min-height: 76px;
 }
+.account-settings-stack {
+  display: grid;
+  gap: 16px;
+  max-width: 760px;
+}
+.account-security,
 .account-danger {
-  max-width: 720px;
+  max-width: 760px;
+}
+.account-auth-loading,
+.account-auth-error,
+.account-auth-standalone {
+  margin: 0 20px 16px;
+}
+.account-auth-loading,
+.account-auth-note {
+  color: var(--p-muted);
+  font-size: 8px;
+  line-height: 1.55;
+}
+.account-auth-error {
+  color: #9d3526;
+  font-size: 9px;
+  line-height: 1.55;
+}
+.account-security input[aria-invalid="true"],
+.account-danger input[aria-invalid="true"] {
+  border-color: #b94334;
+  box-shadow: 0 0 0 1px #b94334;
+}
+.account-auth-methods {
+  display: grid;
+  padding: 0 20px;
+}
+.account-auth-methods article {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--p-line);
+}
+.account-auth-methods article:first-child {
+  border-top: 1px solid var(--p-line);
+}
+.account-auth-methods article > svg,
+.account-google-mark {
+  width: 34px;
+  height: 34px;
+  padding: 9px;
+  border-radius: 8px;
+  background: #f0f3f1;
+  color: #34453e;
+}
+.account-google-mark {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #3565b8;
+  font-size: 14px;
+  font-weight: 750;
+}
+.account-auth-methods article > span:not(.account-google-mark) {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.account-auth-methods strong {
+  font-size: 10px;
+}
+.account-auth-methods small {
+  margin-top: 4px;
+  color: var(--p-muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+.account-auth-methods em {
+  padding: 5px 8px;
+  border-radius: 20px;
+  font-size: 7px;
+  font-style: normal;
+  white-space: nowrap;
+}
+.account-auth-methods em.is-on {
+  background: #e7f4ed;
+  color: #337553;
+}
+.account-auth-methods em.is-off {
+  background: #f2f3f2;
+  color: #737b77;
+}
+.account-google-link {
+  margin: 18px 20px 0;
+  padding: 17px;
+  border: 1px solid var(--p-line);
+  border-radius: 9px;
+  background: #fafbfa;
+}
+.account-google-link > label,
+.account-delete-otp > label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 8px;
+  font-size: 8px;
+  font-weight: 650;
+}
+.account-google-link > .account-auth-note {
+  margin-bottom: 12px;
+}
+.account-google-control {
+  max-width: 320px;
+}
+.account-google-slot {
+  display: flex;
+  min-height: 42px;
+  max-width: 100%;
+}
+.account-google-slot > div,
+.account-google-slot iframe {
+  max-width: 100%;
+}
+.account-google-control[aria-disabled="true"] .account-google-slot {
+  opacity: 0.48;
+  pointer-events: none;
+}
+.account-google-control.is-unavailable .account-google-slot {
+  min-height: 0;
+}
+.account-google-control > .account-auth-note,
+.account-google-control > .account-auth-error {
+  margin-top: 7px;
+}
+.account-auth-link {
+  margin-top: 8px;
+  color: #34453e;
+  font-size: 8px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.account-auth-link:focus-visible {
+  outline: 2px solid #34453e;
+  outline-offset: 3px;
+}
+.account-danger > .deletion-notice {
+  margin: 8px 20px 22px;
 }
 .deletion-notice {
   margin: 8px 0 22px;
@@ -257,6 +401,99 @@
 .danger-action:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+.account-reauth-methods {
+  margin: 0 20px 18px;
+  padding: 0;
+  border: 0;
+}
+.account-reauth-methods legend {
+  margin-bottom: 8px;
+  font-size: 8px;
+  font-weight: 650;
+}
+.account-reauth-methods > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.account-reauth-methods label {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 11px;
+  border: 1px solid var(--p-line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.account-reauth-methods label:has(input:checked) {
+  border-color: #a95b42;
+  box-shadow: 0 0 0 1px #a95b42;
+  background: #fffaf7;
+}
+.account-reauth-methods input {
+  width: 14px;
+  min-height: 14px;
+  margin-top: 1px;
+  padding: 0;
+}
+.account-reauth-methods span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.account-reauth-methods strong {
+  font-size: 8px;
+}
+.account-reauth-methods small {
+  margin-top: 3px;
+  color: var(--p-muted);
+  font-size: 7px;
+  line-height: 1.4;
+}
+.account-danger > .danger-action {
+  margin: 0 20px;
+}
+.account-delete-google,
+.account-delete-otp {
+  margin: 0 20px;
+  padding: 15px;
+  border: 1px solid var(--p-line);
+  border-radius: 8px;
+  background: #fafbfa;
+}
+.account-delete-google > .account-auth-note {
+  margin-bottom: 10px;
+}
+.account-delete-otp > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.account-delete-otp .danger-action {
+  width: 100%;
+  margin-top: 5px;
+}
+.account-danger > .account-auth-error {
+  margin-top: 13px;
+}
+@media (max-width: 700px) {
+  .account-auth-methods article {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+  .account-auth-methods em {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .account-reauth-methods > div {
+    grid-template-columns: 1fr;
+  }
+  .account-delete-otp > div:first-child {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 .payment-summary {
   grid-template-columns: repeat(3, 1fr);

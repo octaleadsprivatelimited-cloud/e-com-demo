@@ -29,7 +29,8 @@ export type IntegrationDefinition = {
     | "SMS"
     | "WHATSAPP"
     | "STORAGE"
-    | "ANALYTICS";
+    | "ANALYTICS"
+    | "AUTH";
   provider: string;
   name: string;
   description: string;
@@ -125,6 +126,28 @@ export const integrationDefinitions: IntegrationDefinition[] = [
     webhooks: false,
   },
   {
+    kind: "SMS",
+    provider: "twilio",
+    name: "Twilio SMS",
+    description: "Transactional mobile OTP and customer SMS delivery.",
+    credentialFields: [
+      { key: "accountSid", label: "Account SID", required: true },
+      { key: "authToken", label: "Auth token", required: true },
+    ],
+    publicFields: [
+      { key: "fromNumber", label: "Sender number", required: true },
+    ],
+    publicSchema: z
+      .object({
+        fromNumber: z.string().trim().regex(/^\+[1-9]\d{7,14}$/).optional(),
+      })
+      .strict()
+      .transform((value) => value as Record<string, unknown>),
+    liveOperations: true,
+    testConnection: true,
+    webhooks: false,
+  },
+  {
     kind: "WHATSAPP",
     provider: "whatsapp-cloud",
     name: "WhatsApp Cloud",
@@ -136,6 +159,34 @@ export const integrationDefinitions: IntegrationDefinition[] = [
     publicFields: [],
     publicSchema: z.object({}).strict(),
     liveOperations: false,
+    testConnection: false,
+    webhooks: false,
+  },
+  {
+    kind: "AUTH",
+    provider: "google",
+    name: "Google Sign-In",
+    description: "Customer authentication with Google Identity Services.",
+    credentialFields: [],
+    publicFields: [
+      { key: "clientId", label: "Web client ID", required: true },
+    ],
+    publicSchema: z
+      .object({
+        clientId: z
+          .string()
+          .trim()
+          .min(20)
+          .max(255)
+          .regex(
+            /^[A-Za-z0-9][A-Za-z0-9._-]*\.apps\.googleusercontent\.com$/,
+            "Enter a Google web client ID ending in .apps.googleusercontent.com",
+          )
+          .optional(),
+      })
+      .strict()
+      .transform((value) => value as Record<string, unknown>),
+    liveOperations: true,
     testConnection: false,
     webhooks: false,
   },
@@ -275,8 +326,14 @@ export function integrationDto(input: {
     publicConfig,
   );
   const lastTest = connectionState(record?.publicConfig || {});
+  // Public-only runtime integrations such as Google Sign-In have no secret
+  // credential to probe. Once enabled and valid, they are active without a
+  // misleading connection test that could not validate the OAuth client ID.
   const connected = Boolean(
-    record?.enabled && configured && lastTest.outcome === "CONNECTED",
+    record?.enabled &&
+      configured &&
+      (lastTest.outcome === "CONNECTED" ||
+        (definition.liveOperations && !definition.testConnection)),
   );
   const status = !configured
     ? "NOT_CONFIGURED"
@@ -404,6 +461,11 @@ export async function testIntegrationConnection(input: {
   } else if (input.definition.provider === "resend") {
     url = "https://api.resend.com/domains";
     headers.authorization = `Bearer ${input.credentials.apiKey}`;
+  } else if (input.definition.provider === "twilio") {
+    const accountSid = input.credentials.accountSid || "",
+      authToken = input.credentials.authToken || "";
+    url = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(accountSid)}.json`;
+    headers.authorization = `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`;
   } else {
     return {
       outcome: "UNSUPPORTED" as const,

@@ -47,6 +47,7 @@ import {
   mobileOtpRequestSchema,
   mobileOtpVerifySchema,
   googleLoginSchema,
+  googleAccountLinkSchema,
   paymentClientEventSchema,
   paymentRetrySchema,
   paymentReconcileSchema,
@@ -87,7 +88,11 @@ import {
   type PromotionConfig,
 } from "./promotions.js";
 import { verifyGoogleIdToken } from "./google-auth.js";
-import { convertProductImage, productImageUpload } from "./image-upload.js";
+import {
+  convertProductImage,
+  productImageUpload,
+  removeConvertedProductImage,
+} from "./image-upload.js";
 import { generateInvoicePdf } from "./invoice.js";
 import { adminOrderDto, adminRefundDto } from "./admin-orders.js";
 import {
@@ -130,10 +135,14 @@ const ok = (
   message = "Success",
   status = 200,
 ) => res.status(status).json({ success: true, data, message });
-function limiter(limit: number, windowMs: number): express.RequestHandler {
+function limiter(
+  limit: number,
+  windowMs: number,
+  keySelector?: (req: express.Request) => string | undefined,
+): express.RequestHandler {
   const buckets = new Map<string, { count: number; reset: number }>();
-  return (req, _res, next) => {
-    const key = req.ip || "unknown",
+  return (req, res, next) => {
+    const key = keySelector?.(req) || req.ip || "unknown",
       now = Date.now(),
       old = buckets.get(key),
       bucket =
@@ -147,10 +156,13 @@ function limiter(limit: number, windowMs: number): express.RequestHandler {
         buckets.delete(buckets.keys().next().value!);
     }
     buckets.set(key, bucket);
-    if (bucket.count > limit)
+    if (bucket.count > limit) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((bucket.reset - now) / 1000));
+      res.setHeader("Retry-After", String(retryAfterSeconds));
       return next(
-        new AppError(429, "RATE_LIMITED", "Too many requests; try again later"),
+        new AppError(429, "RATE_LIMITED", "Too many requests; try again later", { retryAfterSeconds }),
       );
+    }
     next();
   };
 }
@@ -174,9 +186,13 @@ export async function createApp(overrides?: {
     developmentShipping = new DevelopmentShippingProvider();
   const googleVerifier = overrides?.googleVerifier || verifyGoogleIdToken,
     providerRequest = overrides?.providerRequest || fetch,
+    googleIdentities = new Map<
+      string,
+      { userId: string; audience: string; email: string }
+    >(),
     mobileChallenges = new Map<
       string,
-      { hash: string; expiresAt: number; attempts: number }
+      { hash: string; expiresAt: number; resendAt: number; attempts: number }
     >();
   const developmentStorefronts = new Map<string, StorefrontConfig>();
   const developmentPromotions = new Map<string, PromotionConfig>();
@@ -254,6 +270,187 @@ export async function createApp(overrides?: {
       provider: developmentShipping,
     };
   };
+  const mobileOtpDelivery = () => {
+    if (config.NODE_ENV !== "production") return { enabled: true, provider: "development" };
+    if (!persistence) return { enabled: false };
+    const integration = selectRuntimeIntegration(store.integrations.values(), "SMS", undefined, config.NODE_ENV);
+    if (!integration) return { enabled: false };
+    const definition = integrationDefinition("SMS", integration.provider);
+    if (!definition?.liveOperations) return { enabled: false };
+    try {
+      const credentials = vault.decrypt<Record<string, string>>(integration.encryptedCredentials);
+      return integrationConfigured(definition, credentials, integration.publicConfig)
+        ? { enabled: true, provider: definition.provider }
+        : { enabled: false };
+    } catch {
+      return { enabled: false };
+    }
+  };
+  const googleAuthConfiguration = () => {
+    const environment = runtimeEnvironment(config.NODE_ENV);
+    const configured = [...store.integrations.values()]
+      .filter(
+        (entry) =>
+          entry.kind === "AUTH" &&
+          normalizeProvider(entry.provider) === "google" &&
+          entry.environment === environment,
+      )
+      .sort(
+        (left, right) =>
+          left.priority - right.priority ||
+          right.updatedAt.localeCompare(left.updatedAt) ||
+          left.id.localeCompare(right.id),
+      )[0];
+    if (configured) {
+      const definition = integrationDefinition("AUTH", "google");
+      const clientId =
+        typeof configured.publicConfig.clientId === "string"
+          ? configured.publicConfig.clientId.trim()
+          : "";
+      const valid = Boolean(
+        definition &&
+          integrationConfigured(definition, {}, configured.publicConfig),
+      );
+      return configured.enabled && valid && clientId
+        ? { enabled: true, clientId, source: "integration" as const }
+        : { enabled: false, clientId: "", source: "integration" as const };
+    }
+    const clientId = config.GOOGLE_CLIENT_ID.trim();
+    const definition = integrationDefinition("AUTH", "google");
+    const valid = Boolean(
+      definition && integrationConfigured(definition, {}, { clientId }),
+    );
+    return {
+      enabled: Boolean(clientId && valid),
+      clientId: clientId && valid ? clientId : "",
+      source: "environment" as const,
+    };
+  };
+  const googleIdentityForUser = async (userId: string) => {
+    if (persistence)
+      return persistence.getUserAuthIdentity(userId, "google");
+    for (const [subject, identity] of googleIdentities)
+      if (identity.userId === userId)
+        return {
+          userId,
+          provider: "google",
+          subject,
+          audience: identity.audience,
+          email: identity.email,
+        };
+    return null;
+  };
+  const googleAuthMethods = async (userId: string) => {
+    const identity = await googleIdentityForUser(userId),
+      configuration = googleAuthConfiguration();
+    return {
+      google: {
+        linked: Boolean(identity),
+        enabled: configuration.enabled,
+        clientId: identity?.audience || configuration.clientId,
+      },
+    };
+  };
+  const accountAuthMethods = async (user: StoredUser) => ({
+    ...(await googleAuthMethods(user.id)),
+    password: user.passwordEnabled !== false,
+    mobileOtp: {
+      available: Boolean(user.mobile && mobileOtpDelivery().enabled),
+    },
+  });
+  const requestMobileOtp = async (
+    mobile: string,
+    req: express.Request,
+    res: express.Response,
+  ) => {
+    const delivery = mobileOtpDelivery();
+    if (!delivery.enabled)
+      throw new AppError(
+        503,
+        "MOBILE_OTP_UNAVAILABLE",
+        "Mobile OTP sign-in is not available. Use email or Google sign-in.",
+      );
+    const now = Date.now(),
+      existing = mobileChallenges.get(mobile),
+      code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0"),
+      hash = crypto
+        .createHmac("sha256", config.JWT_SECRET)
+        .update(`${mobile}:${code}`)
+        .digest("hex");
+    let retryAfterSeconds: number | undefined;
+    if (persistence) {
+      const reservation = await persistence.reserveMobileOtpChallenge({
+        mobile,
+        codeHash: hash,
+        expiresAt: now + 300000,
+        resendAt: now + 30000,
+        now,
+      });
+      if (!reservation.created)
+        retryAfterSeconds = reservation.retryAfterSeconds;
+    } else if (existing && existing.resendAt > now) {
+      retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((existing.resendAt - now) / 1000),
+      );
+    } else {
+      mobileChallenges.set(mobile, {
+        hash,
+        expiresAt: now + 300000,
+        resendAt: now + 30000,
+        attempts: 0,
+      });
+    }
+    if (retryAfterSeconds !== undefined) {
+      res.setHeader("Retry-After", String(retryAfterSeconds));
+      throw new AppError(
+        429,
+        "OTP_RESEND_TOO_SOON",
+        `Please wait ${retryAfterSeconds} seconds before requesting another code`,
+        { retryAfterSeconds },
+      );
+    }
+    if (persistence) {
+      try {
+        const storefront = await readStorefront(requestHostname(req));
+        await persistence.queueNotification({
+          channel: "SMS",
+          template: "auth.mobile_otp",
+          destination: mobile,
+          payload: {
+            code,
+            expiresInMinutes: 5,
+            storeName: storefront.storeName,
+            message: `${code} is your ${storefront.storeName} verification code. It expires in 5 minutes. Do not share it.`,
+          },
+        });
+      } catch (error) {
+        await persistence
+          .deleteMobileOtpChallenge(mobile, hash)
+          .catch(() => undefined);
+        req.log.error(
+          { err: error },
+          "Could not queue mobile verification notification",
+        );
+        throw new AppError(
+          503,
+          "OTP_DELIVERY_FAILED",
+          "The verification code could not be sent. Please try again.",
+        );
+      }
+    }
+    return ok(
+      res,
+      {
+        expiresInSeconds: 300,
+        resendAfterSeconds: 30,
+        ...(config.NODE_ENV !== "production"
+          ? { developmentCode: code }
+          : {}),
+      },
+      "Verification code queued for delivery",
+    );
+  };
   if (
     config.NODE_ENV !== "production" &&
     !store.findUser("admin@asterrow.local")
@@ -288,6 +485,11 @@ export async function createApp(overrides?: {
         "req.headers.authorization",
         "req.headers.cookie",
         "req.body.password",
+        "req.body.code",
+        "req.body.otp",
+        "req.body.credential",
+        "req.body.mobileOtp",
+        "req.body.googleCredential",
         "req.body.credentials",
         "res.headers.set-cookie",
       ],
@@ -674,6 +876,7 @@ export async function createApp(overrides?: {
         user.email = persisted.user.email;
         user.mobile = persisted.user.mobile || undefined;
         user.passwordHash = persisted.user.passwordHash;
+        user.passwordEnabled = persisted.user.passwordEnabled;
       }
     }
     return authoritativeVersion;
@@ -698,6 +901,7 @@ export async function createApp(overrides?: {
           email: state.user.email,
           mobile: state.user.mobile || undefined,
           passwordHash: state.user.passwordHash,
+          passwordEnabled: state.user.passwordEnabled,
           role: state.user.role,
           permissions,
         };
@@ -707,6 +911,7 @@ export async function createApp(overrides?: {
       user.email = state.user.email;
       user.mobile = state.user.mobile || undefined;
       user.passwordHash = state.user.passwordHash;
+      user.passwordEnabled = state.user.passwordEnabled;
       user.disabledAt = state.user.disabledAt?.toISOString();
       user.authVersion = state.user.authVersion;
     }
@@ -781,76 +986,62 @@ export async function createApp(overrides?: {
       },
     };
   };
-  app.get("/api/v1/auth/providers", (_req, res) =>
-    ok(res, {
+  app.get("/api/v1/auth/providers", (_req, res) => {
+    const mobileOtp = mobileOtpDelivery();
+    const google = googleAuthConfiguration();
+    return ok(res, {
       google: {
-        enabled: Boolean(config.GOOGLE_CLIENT_ID),
-        clientId: config.GOOGLE_CLIENT_ID,
+        enabled: google.enabled,
+        clientId: google.clientId,
       },
-      mobileOtp: { enabled: true },
-    }),
-  );
+      mobileOtp,
+    });
+  });
   app.post(
     "/api/v1/auth/mobile/request",
     limiter(5, 60000),
     validate(mobileOtpRequestSchema),
-    async (req, res) => {
-      const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0"),
-        hash = crypto
-          .createHmac("sha256", config.JWT_SECRET)
-          .update(`${req.body.mobile}:${code}`)
-          .digest("hex");
-      mobileChallenges.set(req.body.mobile, {
-        hash,
-        expiresAt: Date.now() + 300000,
-        attempts: 0,
-      });
-      if (persistence)
-        await persistence.queueNotification({
-          channel: "SMS",
-          template: "auth.mobile_otp",
-          destination: req.body.mobile,
-          payload: { code, expiresInMinutes: 5 },
-        });
-      return ok(
-        res,
-        {
-          expiresInSeconds: 300,
-          ...(config.NODE_ENV !== "production"
-            ? { developmentCode: code }
-            : {}),
-        },
-        "If the number can receive messages, a code has been sent",
-      );
-    },
+    (req, res) => requestMobileOtp(req.body.mobile, req, res),
   );
   app.post(
     "/api/v1/auth/mobile/verify",
     limiter(10, 60000),
     validate(mobileOtpVerifySchema),
     async (req, res) => {
-      const challenge = mobileChallenges.get(req.body.mobile),
+      const now = Date.now(),
         submitted = crypto
           .createHmac("sha256", config.JWT_SECRET)
           .update(`${req.body.mobile}:${req.body.code}`)
-          .digest("hex");
-      if (
-        !challenge ||
-        challenge.expiresAt < Date.now() ||
-        challenge.attempts >= 5 ||
-        !crypto.timingSafeEqual(
-          Buffer.from(challenge.hash),
-          Buffer.from(submitted),
-        )
-      ) {
-        if (challenge) challenge.attempts++;
-        throw new AppError(
-          401,
-          "INVALID_OTP",
-          "The code is invalid or expired",
-        );
+          .digest("hex"),
+        notRequested = () => new AppError(400, "OTP_NOT_REQUESTED", "Request a verification code before trying to sign in"),
+        expired = () => new AppError(410, "OTP_EXPIRED", "The verification code has expired. Request a new code."),
+        tooManyAttempts = (resendAt: number) => {
+          const retryAfterSeconds = Math.max(1, Math.ceil((resendAt - Date.now()) / 1000));
+          res.setHeader("Retry-After", String(retryAfterSeconds));
+          return new AppError(429, "OTP_ATTEMPTS_EXCEEDED", "Too many incorrect attempts. Request a new verification code.", { retryAfterSeconds, action: "REQUEST_NEW_CODE" });
+        };
+      if (persistence) {
+        const result = await persistence.consumeMobileOtpChallenge({ mobile: req.body.mobile, submittedHash: submitted, now, maxAttempts: 5 });
+        if (result.outcome === "NOT_FOUND") throw notRequested();
+        if (result.outcome === "EXPIRED") throw expired();
+        if (result.outcome === "ATTEMPTS_EXCEEDED") throw tooManyAttempts(result.resendAt);
+        if (result.outcome === "INVALID")
+          throw new AppError(401, "INVALID_OTP", "The verification code is incorrect", { attemptsRemaining: result.attemptsRemaining });
+      } else {
+        const challenge = mobileChallenges.get(req.body.mobile);
+        if (!challenge) throw notRequested();
+        if (challenge.expiresAt <= now) {
+          mobileChallenges.delete(req.body.mobile);
+          throw expired();
+        }
+        if (challenge.attempts >= 5) throw tooManyAttempts(challenge.resendAt);
+        if (!crypto.timingSafeEqual(Buffer.from(challenge.hash), Buffer.from(submitted))) {
+          challenge.attempts++;
+          if (challenge.attempts >= 5) throw tooManyAttempts(challenge.resendAt);
+          throw new AppError(401, "INVALID_OTP", "The verification code is incorrect", { attemptsRemaining: 5 - challenge.attempts });
+        }
+        mobileChallenges.delete(req.body.mobile);
       }
-      mobileChallenges.delete(req.body.mobile);
       let user =
         store.findUserByMobile(req.body.mobile) ||
         (await cachePersistedAuthUser({ mobile: req.body.mobile }));
@@ -868,6 +1059,7 @@ export async function createApp(overrides?: {
           passwordHash: await hashPassword(
             crypto.randomBytes(32).toString("hex"),
           ),
+          passwordEnabled: false,
           role: "CUSTOMER",
           permissions: [],
         });
@@ -885,7 +1077,8 @@ export async function createApp(overrides?: {
     limiter(10, 60000),
     validate(googleLoginSchema),
     async (req, res) => {
-      if (!config.GOOGLE_CLIENT_ID)
+      const google = googleAuthConfiguration();
+      if (!google.enabled)
         throw new AppError(
           503,
           "GOOGLE_AUTH_NOT_CONFIGURED",
@@ -893,11 +1086,34 @@ export async function createApp(overrides?: {
         );
       const claims = await googleVerifier(
         req.body.credential,
-        config.GOOGLE_CLIENT_ID,
+        google.clientId,
       );
-      let user =
-        store.findUser(claims.email) ||
-        (await cachePersistedAuthUser({ email: claims.email }));
+      const subject = claims.sub.trim(),
+        email = claims.email.trim().toLowerCase();
+      if (!subject || !email)
+        throw new AppError(
+          401,
+          "INVALID_GOOGLE_TOKEN",
+          "Google credential could not be verified",
+        );
+      let user: StoredUser | undefined;
+      if (persistence)
+        user =
+          (await persistence.findAuthUserByIdentity(
+            "google",
+            subject,
+            email,
+            google.clientId,
+          )) || undefined;
+      else {
+        const identity = googleIdentities.get(subject);
+        user = identity ? store.users.get(identity.userId) : undefined;
+        if (identity && user) {
+          identity.audience = google.clientId;
+          identity.email = email;
+        } else if (identity) googleIdentities.delete(subject);
+      }
+      if (persistence && user) store.users.set(user.id, user);
       if (user && user.role !== "CUSTOMER")
         throw new AppError(
           403,
@@ -905,17 +1121,73 @@ export async function createApp(overrides?: {
           "Use staff sign-in for this account",
         );
       if (!user) {
-        user = store.createUser({
-          name: claims.name || claims.email.split("@")[0] || "Google customer",
-          email: claims.email,
-          passwordHash: await hashPassword(
-            crypto.randomBytes(32).toString("hex"),
-          ),
-          role: "CUSTOMER",
-          permissions: [],
-        });
-        await persistNewUser(user);
+        const emailOwner =
+          store.findUser(email) ||
+          (await cachePersistedAuthUser({ email }));
+        if (emailOwner?.role && emailOwner.role !== "CUSTOMER")
+          throw new AppError(
+            403,
+            "CUSTOMER_LOGIN_ONLY",
+            "Use staff sign-in for this account",
+          );
+        if (emailOwner)
+          throw new AppError(
+            409,
+            "GOOGLE_ACCOUNT_LINK_REQUIRED",
+            "An account already exists with this email. Sign in with your existing method before connecting Google.",
+          );
+        let candidate: StoredUser;
+        try {
+          candidate = store.createUser({
+            name: claims.name || email.split("@")[0] || "Google customer",
+            email,
+            passwordHash: await hashPassword(
+              crypto.randomBytes(32).toString("hex"),
+            ),
+            passwordEnabled: false,
+            role: "CUSTOMER",
+            permissions: [],
+          });
+        } catch (error) {
+          if (error instanceof AppError && error.code === "EMAIL_EXISTS")
+            throw new AppError(
+              409,
+              "GOOGLE_ACCOUNT_LINK_REQUIRED",
+              "An account already exists with this email. Sign in with your existing method before connecting Google.",
+            );
+          throw error;
+        }
+        try {
+          if (persistence) {
+            user = await persistence.saveGoogleUser(
+              candidate,
+              subject,
+              email,
+              google.clientId,
+            );
+            if (user.id !== candidate.id) {
+              store.users.delete(candidate.id);
+              store.users.set(user.id, user);
+            }
+          } else {
+            user = candidate;
+            googleIdentities.set(subject, {
+              userId: user.id,
+              audience: google.clientId,
+              email,
+            });
+          }
+        } catch (error) {
+          store.users.delete(candidate.id);
+          throw error;
+        }
       }
+      if (user.role !== "CUSTOMER")
+        throw new AppError(
+          403,
+          "CUSTOMER_LOGIN_ONLY",
+          "Use staff sign-in for this account",
+        );
       return ok(
         res,
         await issueCustomerSession(user, res),
@@ -946,14 +1218,24 @@ export async function createApp(overrides?: {
           permissions: [],
         });
         await persistNewUser(user);
-        if (persistence)
-          await persistence.queueNotification({
-            userId: user.id,
-            channel: "EMAIL",
-            template: "account.registered",
-            destination: user.email,
-            payload: { name: user.name },
-          });
+        if (persistence) {
+          try {
+            const storefront = await readStorefront(requestHostname(req));
+            await persistence.queueNotification({
+              userId: user.id,
+              channel: "EMAIL",
+              template: "account.registered",
+              destination: user.email,
+              payload: {
+                name: user.name,
+                storeName: storefront.storeName,
+                message: `Welcome ${user.name}. Your ${storefront.storeName} account has been created successfully.`,
+              },
+            });
+          } catch (error) {
+            req.log.warn({ err: error, userId: user.id }, "Could not queue account welcome notification");
+          }
+        }
         return ok(
           res,
           { id: user.id, name: user.name, email: user.email },
@@ -976,6 +1258,7 @@ export async function createApp(overrides?: {
           (await cachePersistedAuthUser({ email: req.body.email }));
         if (
           !user ||
+          user.passwordEnabled === false ||
           !(await verifyPassword(user.passwordHash, req.body.password))
         )
           throw new AppError(
@@ -1043,7 +1326,7 @@ export async function createApp(overrides?: {
             email: user.email,
             role: user.role,
           },
-        });
+        }, "Signed in successfully");
       } catch (e) {
         next(e);
       }
@@ -1195,6 +1478,8 @@ export async function createApp(overrides?: {
       };
       void check().then(() => next(), next);
     });
+  const accountRateLimitKey = (req: express.Request) =>
+    req.principal?.sub ? `account:${req.principal.sub}` : undefined;
   app.get(
     "/api/v1/admin/storefront-config",
     auth,
@@ -1276,9 +1561,130 @@ export async function createApp(overrides?: {
       role: user.role,
     });
   });
+  app.get("/api/v1/account/auth-methods", auth, async (req, res) => {
+    const user = store.users.get(req.principal!.sub);
+    if (!user || user.role !== "CUSTOMER")
+      throw new AppError(
+        403,
+        "CUSTOMER_ACCOUNT_REQUIRED",
+        "Customer account required",
+      );
+    return ok(res, await accountAuthMethods(user));
+  });
+  app.post(
+    "/api/v1/account/auth/mobile/request",
+    auth,
+    limiter(5, 60_000),
+    async (req, res) => {
+      const user = store.users.get(req.principal!.sub);
+      if (!user || user.role !== "CUSTOMER")
+        throw new AppError(
+          403,
+          "CUSTOMER_ACCOUNT_REQUIRED",
+          "Customer account required",
+        );
+      if (!user.mobile)
+        throw new AppError(
+          409,
+          "MOBILE_NOT_LINKED",
+          "Add a mobile number to your account before requesting a code",
+        );
+      return requestMobileOtp(user.mobile, req, res);
+    },
+  );
+  app.post(
+    "/api/v1/account/auth/google/link",
+    auth,
+    limiter(5, 60_000, accountRateLimitKey),
+    validate(googleAccountLinkSchema),
+    async (req, res) => {
+      const user = store.users.get(req.principal!.sub);
+      if (!user || user.role !== "CUSTOMER")
+        throw new AppError(
+          403,
+          "CUSTOMER_ACCOUNT_REQUIRED",
+          "Customer account required",
+        );
+      if (user.passwordEnabled === false)
+        throw new AppError(
+          409,
+          "PASSWORD_AUTH_NOT_ENABLED",
+          "Password authentication is not enabled for this account",
+        );
+      if (!(await verifyPassword(user.passwordHash, req.body.currentPassword)))
+        throw new AppError(
+          401,
+          "INVALID_CURRENT_PASSWORD",
+          "Current password is incorrect",
+        );
+      const google = googleAuthConfiguration();
+      if (!google.enabled)
+        throw new AppError(
+          503,
+          "GOOGLE_AUTH_NOT_CONFIGURED",
+          "Google sign-in is not configured",
+        );
+      const claims = await googleVerifier(
+          req.body.googleCredential,
+          google.clientId,
+        ),
+        subject = claims.sub.trim(),
+        email = claims.email.trim().toLowerCase();
+      if (!subject || !email)
+        throw new AppError(
+          401,
+          "INVALID_GOOGLE_TOKEN",
+          "Google credential could not be verified",
+        );
+      if (email !== user.email.trim().toLowerCase())
+        throw new AppError(
+          409,
+          "GOOGLE_EMAIL_MISMATCH",
+          "Choose the Google account that uses your customer email address",
+        );
+
+      if (persistence)
+        await persistence.linkAuthIdentity({
+          userId: user.id,
+          provider: "google",
+          subject,
+          audience: google.clientId,
+          email,
+        });
+      else {
+        const subjectOwner = googleIdentities.get(subject);
+        if (subjectOwner && subjectOwner.userId !== user.id)
+          throw new AppError(
+            409,
+            "GOOGLE_IDENTITY_IN_USE",
+            "This Google account is already connected to another customer",
+          );
+        const userIdentity = [...googleIdentities.entries()].find(
+          ([, identity]) => identity.userId === user.id,
+        );
+        if (userIdentity && userIdentity[0] !== subject)
+          throw new AppError(
+            409,
+            "GOOGLE_ACCOUNT_ALREADY_LINKED",
+            "A different Google account is already connected to this customer",
+          );
+        googleIdentities.set(subject, {
+          userId: user.id,
+          audience: google.clientId,
+          email,
+        });
+      }
+      return ok(
+        res,
+        await accountAuthMethods(user),
+        "Google account connected",
+      );
+    },
+  );
   app.delete(
     "/api/v1/account",
     auth,
+    limiter(8, 60_000, accountRateLimitKey),
     validate(accountDeletionSchema),
     async (req, res) => {
       const userId = req.principal!.sub,
@@ -1292,38 +1698,123 @@ export async function createApp(overrides?: {
           "Staff accounts cannot be deleted here",
         );
       let reauthenticated = false;
-      if (req.body.password)
+      if (req.body.password) {
+        if (user.passwordEnabled === false)
+          throw new AppError(
+            409,
+            "PASSWORD_AUTH_NOT_ENABLED",
+            "Password authentication is not enabled for this account",
+          );
         reauthenticated = await verifyPassword(
           user.passwordHash,
           req.body.password,
         );
-      else if (req.body.mobileOtp && user.mobile) {
-        const challenge = mobileChallenges.get(user.mobile);
-        const submitted = crypto
-          .createHmac("sha256", config.JWT_SECRET)
-          .update(`${user.mobile}:${req.body.mobileOtp}`)
-          .digest("hex");
-        reauthenticated = Boolean(
-          challenge &&
-            challenge.expiresAt >= Date.now() &&
-            challenge.attempts < 5 &&
+        if (!reauthenticated)
+          throw new AppError(
+            401,
+            "INVALID_CURRENT_PASSWORD",
+            "Current password is incorrect",
+          );
+      } else if (req.body.mobileOtp) {
+        if (!user.mobile)
+          throw new AppError(
+            409,
+            "MOBILE_NOT_LINKED",
+            "No mobile number is connected to this customer account",
+          );
+        const now = Date.now(),
+          submitted = crypto
+            .createHmac("sha256", config.JWT_SECRET)
+            .update(`${user.mobile}:${req.body.mobileOtp}`)
+            .digest("hex"),
+          notRequested = () =>
+            new AppError(
+              400,
+              "OTP_NOT_REQUESTED",
+              "Request a verification code before trying to continue",
+            ),
+          expired = () =>
+            new AppError(
+              410,
+              "OTP_EXPIRED",
+              "The verification code has expired. Request a new code.",
+            ),
+          tooManyAttempts = (resendAt: number) => {
+            const retryAfterSeconds = Math.max(
+              1,
+              Math.ceil((resendAt - Date.now()) / 1000),
+            );
+            res.setHeader("Retry-After", String(retryAfterSeconds));
+            return new AppError(
+              429,
+              "OTP_ATTEMPTS_EXCEEDED",
+              "Too many incorrect attempts. Request a new verification code.",
+              {
+                retryAfterSeconds,
+                action: "REQUEST_NEW_CODE",
+              },
+            );
+          };
+        if (persistence) {
+          const result = await persistence.consumeMobileOtpChallenge({
+            mobile: user.mobile,
+            submittedHash: submitted,
+            now,
+            maxAttempts: 5,
+          });
+          if (result.outcome === "NOT_FOUND") throw notRequested();
+          if (result.outcome === "EXPIRED") throw expired();
+          if (result.outcome === "ATTEMPTS_EXCEEDED")
+            throw tooManyAttempts(result.resendAt);
+          if (result.outcome === "INVALID")
+            throw new AppError(
+              401,
+              "INVALID_OTP",
+              "The verification code is incorrect",
+              { attemptsRemaining: result.attemptsRemaining },
+            );
+          reauthenticated = true;
+        } else {
+          const challenge = mobileChallenges.get(user.mobile);
+          if (!challenge) throw notRequested();
+          if (challenge.expiresAt <= now) {
+            mobileChallenges.delete(user.mobile);
+            throw expired();
+          }
+          if (challenge.attempts >= 5)
+            throw tooManyAttempts(challenge.resendAt);
+          reauthenticated =
+            challenge.hash.length === submitted.length &&
             crypto.timingSafeEqual(
               Buffer.from(challenge.hash),
               Buffer.from(submitted),
-            ),
-        );
-        if (challenge) {
+            );
           if (reauthenticated) mobileChallenges.delete(user.mobile);
-          else challenge.attempts++;
+          else {
+            challenge.attempts++;
+            if (challenge.attempts >= 5)
+              throw tooManyAttempts(challenge.resendAt);
+            throw new AppError(
+              401,
+              "INVALID_OTP",
+              "The verification code is incorrect",
+              { attemptsRemaining: 5 - challenge.attempts },
+            );
+          }
         }
-      } else if (req.body.googleCredential && config.GOOGLE_CLIENT_ID) {
+      } else if (req.body.googleCredential) {
+        const identity = await googleIdentityForUser(user.id);
+        if (!identity)
+          throw new AppError(
+            409,
+            "GOOGLE_ACCOUNT_NOT_LINKED",
+            "Connect a Google account before using Google to confirm deletion",
+          );
         const claims = await googleVerifier(
           req.body.googleCredential,
-          config.GOOGLE_CLIENT_ID,
+          identity.audience,
         );
-        reauthenticated =
-          claims.email_verified === true &&
-          claims.email.toLowerCase() === user.email.toLowerCase();
+        reauthenticated = claims.sub.trim() === identity.subject;
       }
       if (!reauthenticated)
         throw new AppError(
@@ -1356,6 +1847,8 @@ export async function createApp(overrides?: {
       store.wishlists.delete(userId);
       store.carts.delete(`user:${userId}`);
       if (user.mobile) mobileChallenges.delete(user.mobile);
+      for (const [subject, identity] of googleIdentities)
+        if (identity.userId === userId) googleIdentities.delete(subject);
       store.users.delete(userId);
       store.auditLogs.unshift({
         id: crypto.randomUUID(),
@@ -1809,14 +2302,23 @@ export async function createApp(overrides?: {
         };
       const orderedIds = product.media.map((item) => item.id);
       orderedIds.splice(media.position, 0, media.id);
-      await persistence?.addProductMedia({
-        id: media.id,
-        productId: product.id,
-        url: media.url,
-        alt: media.alt,
-        position: media.position,
-        variantId: media.variantId,
-      }, orderedIds);
+      try {
+        await persistence?.addProductMedia({
+          id: media.id,
+          productId: product.id,
+          url: media.url,
+          alt: media.alt,
+          position: media.position,
+          variantId: media.variantId,
+        }, orderedIds);
+      } catch (error) {
+        await removeConvertedProductImage(
+          media.url,
+          config.UPLOAD_DIR,
+          config.PUBLIC_UPLOAD_BASE_URL,
+        ).catch(() => undefined);
+        throw error;
+      }
       product.media.splice(media.position, 0, media);
       product.media.forEach((item, position) => (item.position = position));
       product.updatedAt = new Date().toISOString();
@@ -1910,6 +2412,18 @@ export async function createApp(overrides?: {
         product.id,
         product.media.map((item) => item.id),
       );
+      try {
+        await removeConvertedProductImage(
+          media.url,
+          config.UPLOAD_DIR,
+          config.PUBLIC_UPLOAD_BASE_URL,
+        );
+      } catch (error) {
+        req.log.warn(
+          { err: error, mediaId: media.id },
+          "Could not remove generated product image files",
+        );
+      }
       return ok(res, { id: media.id, deleted: true }, "Media removed");
     },
   );

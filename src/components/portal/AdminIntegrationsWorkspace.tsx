@@ -27,7 +27,8 @@ type IntegrationKind =
   | "SMS"
   | "WHATSAPP"
   | "STORAGE"
-  | "ANALYTICS";
+  | "ANALYTICS"
+  | "AUTH";
 type TestOutcome =
   | "CONNECTED"
   | "FAILED"
@@ -96,6 +97,7 @@ type IntegrationFilter =
   | "PAYMENT"
   | "SHIPPING"
   | "COMMUNICATION"
+  | "AUTH"
   | "ANALYTICS"
   | "STORAGE";
 
@@ -109,6 +111,7 @@ const filters: Array<{ value: IntegrationFilter; label: string }> = [
   { value: "PAYMENT", label: "Payments" },
   { value: "SHIPPING", label: "Shipping" },
   { value: "COMMUNICATION", label: "Communication" },
+  { value: "AUTH", label: "Authentication" },
   { value: "ANALYTICS", label: "Analytics" },
   { value: "STORAGE", label: "Storage" },
 ];
@@ -121,6 +124,7 @@ const kindLabels: Record<IntegrationKind, string> = {
   WHATSAPP: "Messaging",
   STORAGE: "Storage",
   ANALYTICS: "Analytics",
+  AUTH: "Authentication",
 };
 
 const kindColors: Record<IntegrationKind, string> = {
@@ -131,6 +135,7 @@ const kindColors: Record<IntegrationKind, string> = {
   WHATSAPP: "#31a45d",
   STORAGE: "#6b7280",
   ANALYTICS: "#d38b22",
+  AUTH: "#4285f4",
 };
 
 function ProviderIcon({ kind }: { kind: IntegrationKind }) {
@@ -140,6 +145,7 @@ function ProviderIcon({ kind }: { kind: IntegrationKind }) {
   if (kind === "SMS" || kind === "WHATSAPP") return <MessageSquare />;
   if (kind === "STORAGE") return <Package />;
   if (kind === "ANALYTICS") return <Activity />;
+  if (kind === "AUTH") return <KeyRound />;
   return <Code2 />;
 }
 
@@ -183,6 +189,16 @@ function publicConfigValues(item: IntegrationDto) {
 function credentialPlaceholder(field: CredentialField) {
   if (!field.configured) return field.required ? "Required" : "Optional";
   return `${field.masked || "Stored securely"} — leave blank to keep`;
+}
+
+function isPublicOnlyActive(item: IntegrationDto) {
+  return (
+    item.enabled &&
+    item.configured &&
+    item.credentialFields.length === 0 &&
+    item.capabilities.liveOperations &&
+    !item.capabilities.testConnection
+  );
 }
 
 export function AdminIntegrationsWorkspace() {
@@ -670,8 +686,18 @@ export function AdminIntegrationsWorkspace() {
                 <p>{item.description}</p>
               </div>
               <div className="integration-badges" aria-label={`${item.name} status`}>
-                <span className={item.connected ? "connected" : "muted"}>
-                  {item.connected ? "Connected" : "Not connected"}
+                <span
+                  className={
+                    item.connected || isPublicOnlyActive(item)
+                      ? "connected"
+                      : "muted"
+                  }
+                >
+                  {isPublicOnlyActive(item)
+                    ? "Active"
+                    : item.connected
+                      ? "Connected"
+                      : "Not connected"}
                 </span>
                 <span className={item.configured ? "configured" : "warning"}>
                   {item.configured ? "Configured" : "Setup needed"}
@@ -767,8 +793,18 @@ export function AdminIntegrationsWorkspace() {
             </header>
 
             <div className="integration-modal-status">
-              <span className={selected.connected ? "connected" : "muted"}>
-                {selected.connected ? "Connected" : "Not connected"}
+              <span
+                className={
+                  selected.connected || isPublicOnlyActive(selected)
+                    ? "connected"
+                    : "muted"
+                }
+              >
+                {isPublicOnlyActive(selected)
+                  ? "Active"
+                  : selected.connected
+                    ? "Connected"
+                    : "Not connected"}
               </span>
               <span className={selected.configured ? "configured" : "warning"}>
                 {selected.configured ? "Configured" : "Setup needed"}

@@ -17,6 +17,7 @@ import {
 import { money } from "@/data/commerce";
 import { useCommerceCart } from "@/lib/commerce-cart";
 import { commerceApi, CommerceApiError, saveAccessToken } from "@/lib/commerce-api";
+import { loadGoogleIdentity } from "@/lib/google-identity";
 import { StoreBrand, useStorefrontConfig } from "@/lib/storefront-config";
 import { StorePage } from "./StoreHeader";
 import { toast, Toaster } from "sonner";
@@ -792,14 +793,546 @@ export function CheckoutPage() {
   );
 }
 
-type GoogleIdentity={accounts:{id:{initialize:(input:{client_id:string;callback:(response:{credential:string})=>void})=>void;renderButton:(element:HTMLElement,options:Record<string,unknown>)=>void}}};
-function CustomerQuickLogin(){const [mobile,setMobile]=useState("+91"),[code,setCode]=useState(""),[sent,setSent]=useState(false),[busy,setBusy]=useState(false),googleButton=useRef<HTMLDivElement>(null);const finish=(result:{accessToken:string})=>{saveAccessToken(result.accessToken);window.location.href="/account"};useEffect(()=>{commerceApi<{google:{enabled:boolean;clientId:string}}>("/api/v1/auth/providers").then(({google})=>{if(!google.enabled||!googleButton.current)return;const setup=()=>{const identity=(window as typeof window&{google?:GoogleIdentity}).google;if(!identity||!googleButton.current)return;identity.accounts.id.initialize({client_id:google.clientId,callback:async response=>{try{finish(await commerceApi<{accessToken:string}>("/api/v1/auth/google",{method:"POST",body:JSON.stringify({credential:response.credential})}))}catch(error){toast.error(error instanceof Error?error.message:"Google sign-in failed")}}});identity.accounts.id.renderButton(googleButton.current,{theme:"outline",size:"large",width:320,text:"continue_with"})};if((window as typeof window&{google?:GoogleIdentity}).google)return setup();const script=document.createElement("script");script.src="https://accounts.google.com/gsi/client";script.async=true;script.onload=setup;document.head.appendChild(script)}).catch(()=>undefined)},[]);const request=async()=>{setBusy(true);try{const result=await commerceApi<{developmentCode?:string}>("/api/v1/auth/mobile/request",{method:"POST",body:JSON.stringify({mobile})});setSent(true);toast.success(result.developmentCode?`Development OTP: ${result.developmentCode}`:"Verification code sent")}catch(error){toast.error(error instanceof Error?error.message:"Code could not be sent")}finally{setBusy(false)}};const verify=async()=>{setBusy(true);try{finish(await commerceApi<{accessToken:string}>("/api/v1/auth/mobile/verify",{method:"POST",body:JSON.stringify({mobile,code})}))}catch(error){toast.error(error instanceof Error?error.message:"Verification failed")}finally{setBusy(false)}};return <div className="quick-login"><div ref={googleButton}/><div className="auth-divider"><span>or use mobile OTP</span></div><div className="mobile-login"><input aria-label="Mobile number" value={mobile} onChange={e=>setMobile(e.target.value)} placeholder="+919876543210"/>{sent&&<input aria-label="Verification code" value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" placeholder="6-digit OTP"/>}<button type="button" disabled={busy||!/^\+[1-9]\d{7,14}$/.test(mobile)||(sent&&code.length!==6)} onClick={sent?verify:request}>{sent?"Verify & continue":"Send OTP"}</button></div>{sent&&<button type="button" className="otp-change" onClick={()=>{setSent(false);setCode("")}}>Change number</button>}</div>}
+const customerEmailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const mobilePattern = /^\+[1-9]\d{7,14}$/;
+const normalizeMobile = (value: string) => value.trim().replace(/[\s()-]/g, "");
+const formatCountdown = (seconds: number) =>
+  `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+
+function finishCustomerLogin(result: { accessToken: string }) {
+  if (!result.accessToken)
+    throw new Error("The sign-in session could not be created.");
+  saveAccessToken(result.accessToken);
+  window.location.assign("/account");
+}
+
+function authErrorMessage(
+  error: unknown,
+  fallback: string,
+): { message: string; field?: "email" | "password" | "otp" } {
+  if (!(error instanceof CommerceApiError))
+    return { message: error instanceof Error ? error.message : fallback };
+
+  switch (error.code) {
+    case "INVALID_CREDENTIALS":
+      return {
+        message:
+          "Email or password is incorrect. Check both fields and try again.",
+      };
+    case "EMAIL_EXISTS":
+      return {
+        message:
+          "An account already exists for this email. Sign in instead or use another email.",
+        field: "email",
+      };
+    case "INVALID_OTP":
+      return {
+        message:
+          "That OTP is incorrect or has expired. Request a new code and try again.",
+        field: "otp",
+      };
+    case "OTP_NOT_REQUESTED":
+      return {
+        message: "Request an OTP before entering a verification code.",
+        field: "otp",
+      };
+    case "OTP_EXPIRED":
+      return {
+        message: "This OTP has expired. Request a new code to continue.",
+        field: "otp",
+      };
+    case "OTP_ATTEMPTS_EXCEEDED":
+      return {
+        message:
+          "Too many incorrect OTP attempts. Request a new code to continue.",
+        field: "otp",
+      };
+    case "OTP_RESEND_TOO_SOON":
+      return {
+        message: "Please wait before requesting another OTP.",
+        field: "otp",
+      };
+    case "MOBILE_OTP_UNAVAILABLE":
+      return {
+        message:
+          "Mobile OTP is unavailable right now. Continue with email instead.",
+      };
+    case "INVALID_GOOGLE_TOKEN":
+      return {
+        message:
+          "Google could not verify this sign-in. Choose your Google account and try again.",
+      };
+    case "GOOGLE_AUTH_UNAVAILABLE":
+      return {
+        message:
+          "Google sign-in is temporarily unavailable. Try again or continue with email.",
+      };
+    case "GOOGLE_AUTH_NOT_CONFIGURED":
+      return {
+        message:
+          "Google sign-in is not configured for this store. Continue with email instead.",
+      };
+    case "GOOGLE_ACCOUNT_LINK_REQUIRED":
+      return {
+        message:
+          "An account already uses this email. Sign in with email/password, then connect Google in Profile settings.",
+      };
+    case "CUSTOMER_LOGIN_ONLY":
+      return {
+        message:
+          "This account belongs to a staff member. Use the staff sign-in instead.",
+      };
+    case "OTP_DELIVERY_FAILED":
+      return {
+        message:
+          "We could not deliver the OTP. Check the number or try again shortly.",
+      };
+    case "TWO_FACTOR_REQUIRED":
+      return {
+        message:
+          "Enter the current 6-digit authenticator code for this staff account.",
+        field: "otp",
+      };
+    case "ACCOUNT_DISABLED":
+      return {
+        message: "This account is disabled. Contact store support for help.",
+      };
+    case "RATE_LIMITED":
+      return {
+        message: "Too many attempts. Please wait a minute before trying again.",
+      };
+    case "VALIDATION_ERROR":
+      return {
+        message: "Some details are not valid. Review the highlighted fields.",
+      };
+    default:
+      return { message: error.message || fallback };
+  }
+}
+
+function CustomerQuickLogin() {
+  const [mobile, setMobile] = useState("+91");
+  const [code, setCode] = useState("");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [mobileError, setMobileError] = useState("");
+  const [codeError, setCodeError] = useState("");
+  const [secondsRemaining, setSecondsRemaining] = useState(0);
+  const [resendRemaining, setResendRemaining] = useState(0);
+  const [googleStatus, setGoogleStatus] = useState<
+    "loading" | "ready" | "authenticating" | "unavailable"
+  >("loading");
+  const [googleMessage, setGoogleMessage] = useState(
+    "Preparing secure Google sign-in…",
+  );
+  const [googleRetryable, setGoogleRetryable] = useState(false);
+  const [googleAttempt, setGoogleAttempt] = useState(0);
+  const [mobileOtpStatus, setMobileOtpStatus] = useState<
+    "loading" | "ready" | "unavailable"
+  >("loading");
+  const googleButton = useRef<HTMLDivElement>(null);
+  const googleSigningIn = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    setGoogleStatus("loading");
+    setGoogleMessage("Preparing secure Google sign-in…");
+    setGoogleRetryable(false);
+
+    commerceApi<{
+      google: { enabled: boolean; clientId: string };
+      mobileOtp?: { enabled: boolean };
+    }>("/api/v1/auth/providers")
+      .then(({ google, mobileOtp }) => {
+        if (cancelled) return;
+        setMobileOtpStatus(
+          mobileOtp?.enabled === false ? "unavailable" : "ready",
+        );
+        if (!google.enabled || !googleButton.current) {
+          setGoogleStatus("unavailable");
+          setGoogleMessage(
+            "Google sign-in is not configured for this store. Use mobile OTP or email instead.",
+          );
+          return;
+        }
+
+        return loadGoogleIdentity()
+          .then((identity) => {
+            if (cancelled || !googleButton.current) return;
+            const button = googleButton.current;
+            button.replaceChildren();
+            googleSigningIn.current = false;
+
+            identity.accounts.id.initialize({
+              client_id: google.clientId,
+              auto_select: false,
+              ux_mode: "popup",
+              callback: async (response) => {
+                if (cancelled || googleSigningIn.current) return;
+                if (!response.credential) {
+                  const message =
+                    "Google did not return a sign-in credential. Please try again.";
+                  setGoogleMessage(message);
+                  toast.error(message);
+                  return;
+                }
+
+                googleSigningIn.current = true;
+                setGoogleStatus("authenticating");
+                setGoogleMessage("Verifying your Google account…");
+                const toastId = toast.loading("Signing in with Google…");
+                try {
+                  const result = await commerceApi<{ accessToken: string }>(
+                    "/api/v1/auth/google",
+                    {
+                      method: "POST",
+                      body: JSON.stringify({ credential: response.credential }),
+                    },
+                  );
+                  toast.success("Google account verified", { id: toastId });
+                  finishCustomerLogin(result);
+                } catch (error) {
+                  const notice = authErrorMessage(
+                    error,
+                    "Google sign-in failed. Please try again.",
+                  );
+                  if (!cancelled) {
+                    setGoogleStatus("ready");
+                    setGoogleMessage(notice.message);
+                  }
+                  googleSigningIn.current = false;
+                  toast.error(notice.message, { id: toastId });
+                }
+              },
+            });
+            identity.accounts.id.renderButton(button, {
+              type: "standard",
+              theme: "outline",
+              size: "large",
+              width: Math.min(
+                320,
+                Math.max(220, Math.floor(button.getBoundingClientRect().width)),
+              ),
+              text: "continue_with",
+              shape: "rectangular",
+              logo_alignment: "left",
+            });
+            setGoogleMessage("");
+            setGoogleStatus("ready");
+          })
+          .catch(() => {
+            if (cancelled) return;
+            const message =
+              "Google sign-in could not load. Check your connection, retry, or continue with email.";
+            setGoogleStatus("unavailable");
+            setGoogleMessage(message);
+            setGoogleRetryable(true);
+            toast.error("Google sign-in could not load", {
+              description: "You can retry or continue with email.",
+            });
+          });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const message =
+          "Sign-in options could not be checked. Refresh the page or continue with email.";
+        setGoogleStatus("unavailable");
+        setGoogleMessage(message);
+        setGoogleRetryable(true);
+        setMobileOtpStatus("unavailable");
+        toast.error("Sign-in options are temporarily unavailable", {
+          description: "Email sign-in is still available below.",
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [googleAttempt]);
+
+  useEffect(() => {
+    if (!sent) return;
+    const timer = window.setInterval(() => {
+      setSecondsRemaining((current) => Math.max(0, current - 1));
+      setResendRemaining((current) => Math.max(0, current - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [sent]);
+
+  const request = async () => {
+    const normalized = normalizeMobile(mobile);
+    if (!mobilePattern.test(normalized)) {
+      const message =
+        "Enter a valid mobile number with country code, for example +919876543210.";
+      setMobileError(message);
+      toast.error(message);
+      return;
+    }
+    setMobile(normalized);
+    setMobileError("");
+    setCodeError("");
+    setBusy(true);
+    try {
+      const result = await commerceApi<{
+        developmentCode?: string;
+        expiresInSeconds?: number;
+        resendAfterSeconds?: number;
+      }>("/api/v1/auth/mobile/request", {
+        method: "POST",
+        body: JSON.stringify({ mobile: normalized }),
+      });
+      setSent(true);
+      setCode("");
+      setSecondsRemaining(Math.max(1, result.expiresInSeconds || 300));
+      setResendRemaining(Math.max(0, result.resendAfterSeconds || 30));
+      toast.success(
+        result.developmentCode
+          ? `Development OTP: ${result.developmentCode}`
+          : "Verification code sent",
+        { description: "The code expires in 5 minutes." },
+      );
+    } catch (error) {
+      const notice = authErrorMessage(error, "The code could not be sent.");
+      if (
+        error instanceof CommerceApiError &&
+        error.code === "MOBILE_OTP_UNAVAILABLE"
+      )
+        setMobileOtpStatus("unavailable");
+      else if (sent || notice.field === "otp") setCodeError(notice.message);
+      else setMobileError(notice.message);
+      toast.error(notice.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verify = async () => {
+    if (!/^\d{6}$/.test(code)) {
+      const message = "Enter the complete 6-digit OTP.";
+      setCodeError(message);
+      toast.error(message);
+      return;
+    }
+    if (secondsRemaining === 0) {
+      const message = "This OTP has expired. Request a new code to continue.";
+      setCodeError(message);
+      toast.error(message);
+      return;
+    }
+    setCodeError("");
+    setBusy(true);
+    try {
+      finishCustomerLogin(
+        await commerceApi<{ accessToken: string }>(
+          "/api/v1/auth/mobile/verify",
+          {
+            method: "POST",
+            body: JSON.stringify({ mobile, code }),
+          },
+        ),
+      );
+    } catch (error) {
+      const notice = authErrorMessage(error, "The OTP could not be verified.");
+      if (
+        error instanceof CommerceApiError &&
+        ["OTP_EXPIRED", "OTP_ATTEMPTS_EXCEEDED", "OTP_NOT_REQUESTED"].includes(
+          error.code,
+        )
+      )
+        setSecondsRemaining(0);
+      setCodeError(notice.message);
+      toast.error(notice.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeNumber = () => {
+    setSent(false);
+    setCode("");
+    setCodeError("");
+    setMobileError("");
+    setSecondsRemaining(0);
+    setResendRemaining(0);
+  };
+
+  return (
+    <div className="quick-login">
+      <div
+        className={`google-login-shell is-${googleStatus}`}
+        aria-busy={googleStatus === "loading" || googleStatus === "authenticating"}
+        aria-disabled={googleStatus === "authenticating" || undefined}
+      >
+        <div className="google-login-slot" ref={googleButton} />
+      </div>
+      {googleMessage && (
+        <p
+          className={`auth-provider-note${googleStatus === "ready" ? " is-error" : ""}`}
+          role={googleStatus === "ready" ? "alert" : "status"}
+          aria-live="polite"
+        >
+          {googleMessage}
+        </p>
+      )}
+      {googleRetryable && (
+        <button
+          type="button"
+          className="google-login-retry"
+          onClick={() => setGoogleAttempt((current) => current + 1)}
+        >
+          Retry Google sign-in
+        </button>
+      )}
+      {mobileOtpStatus === "ready" ? (
+        <>
+          <div className="auth-divider">
+            <span>
+              {googleStatus === "ready" || googleStatus === "authenticating"
+                ? "or use mobile OTP"
+                : "Use mobile OTP"}
+            </span>
+          </div>
+          <div className={`mobile-login${sent ? " sent" : ""}`}>
+            <input
+              aria-label="Mobile number"
+              aria-invalid={Boolean(mobileError)}
+              aria-describedby={mobileError ? "mobile-error" : "mobile-hint"}
+              autoComplete="tel"
+              inputMode="tel"
+              value={mobile}
+              disabled={sent || busy}
+              onChange={(event) => {
+                setMobile(event.target.value);
+                setMobileError("");
+              }}
+              placeholder="+919876543210"
+            />
+            {sent && (
+              <input
+                aria-label="Verification code"
+                aria-invalid={Boolean(codeError)}
+                aria-describedby={codeError ? "otp-error" : "otp-status"}
+                autoComplete="one-time-code"
+                value={code}
+                onChange={(event) => {
+                  setCode(event.target.value.replace(/\D/g, "").slice(0, 6));
+                  setCodeError("");
+                }}
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                placeholder="6-digit OTP"
+              />
+            )}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={sent ? verify : request}
+            >
+              {busy
+                ? "Please wait…"
+                : sent
+                  ? "Verify & continue"
+                  : "Send OTP"}
+            </button>
+          </div>
+          {!sent && !mobileError && (
+            <p className="auth-hint" id="mobile-hint">
+              Include your country code. We will send a 6-digit code by SMS.
+            </p>
+          )}
+          {mobileError && (
+            <p className="auth-field-error" id="mobile-error" role="alert">
+              {mobileError}
+            </p>
+          )}
+          {sent && (
+            <div className="otp-controls">
+              <p
+                className={
+                  secondsRemaining ? "auth-hint" : "auth-field-error"
+                }
+                id="otp-status"
+              >
+                {secondsRemaining
+                  ? `Code expires in ${formatCountdown(secondsRemaining)}`
+                  : "Code expired. Request a new OTP."}
+              </p>
+              <div>
+                <button
+                  type="button"
+                  className="otp-change"
+                  onClick={changeNumber}
+                >
+                  Change number
+                </button>
+                <button
+                  type="button"
+                  className="otp-change"
+                  disabled={busy || resendRemaining > 0}
+                  onClick={request}
+                >
+                  {resendRemaining > 0
+                    ? `Resend in ${resendRemaining}s`
+                    : "Resend OTP"}
+                </button>
+              </div>
+            </div>
+          )}
+          {codeError && (
+            <p className="auth-field-error" id="otp-error" role="alert">
+              {codeError}
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="auth-provider-note" role="status">
+          {mobileOtpStatus === "loading"
+            ? "Checking mobile OTP availability…"
+            : "Mobile OTP is unavailable right now. Continue with email below."}
+        </p>
+      )}
+    </div>
+  );
+}
 
 export function LoginPage() {
   const [mode, setMode] = useState<"login" | "register">("login"),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [values, setValues] = useState({
+      name: "",
+      email: "",
+      password: "",
+      confirmPassword: "",
+      otp: "",
+    }),
+    [errors, setErrors] = useState<
+      Partial<Record<"name" | "email" | "password" | "confirmPassword" | "otp", string>>
+    >({}),
+    [authNotice, setAuthNotice] = useState("");
+
+  const updateField = (field: keyof typeof values, value: string) => {
+    setValues((current) => ({ ...current, [field]: value }));
+    setErrors((current) => ({ ...current, [field]: undefined }));
+    setAuthNotice("");
+  };
+
+  const switchMode = () => {
+    setMode((current) => (current === "login" ? "register" : "login"));
+    setErrors({});
+    setAuthNotice("");
+    setValues((current) => ({
+      ...current,
+      password: "",
+      confirmPassword: "",
+      otp: "",
+    }));
+  };
+
   return (
     <StorePage>
+      <Toaster richColors position="bottom-center" />
       <main className="auth-page">
         <section>
           <p className="eyebrow">Welcome to Aster & Row</p>
@@ -814,19 +1347,72 @@ export function LoginPage() {
               : "Join for faster checkout, order tracking and members-only rewards."}
           </p>
           {mode === "login" && <CustomerQuickLogin />}
+          {mode === "login" && (
+            <div className="auth-divider auth-email-divider">
+              <span>or continue with email</span>
+            </div>
+          )}
+          {authNotice && (
+            <div className="auth-notice" role="alert">
+              {authNotice}
+            </div>
+          )}
           <form
+            noValidate
             onSubmit={async (e) => {
               e.preventDefault();
+              const nextErrors: typeof errors = {};
+              const email = values.email.trim().toLowerCase();
+              const name = values.name.trim();
+              if (mode === "register" && name.length < 2)
+                nextErrors.name = "Enter your full name using at least 2 characters.";
+              if (!customerEmailPattern.test(email) || email.length > 254)
+                nextErrors.email = "Enter a valid email address, such as name@example.com.";
+              if (!values.password)
+                nextErrors.password = "Enter your password.";
+              else if (values.password.length > 128)
+                nextErrors.password = "Password must contain 128 characters or fewer.";
+              else if (
+                mode === "register" &&
+                (values.password.length < 8 ||
+                  !/[a-z]/.test(values.password) ||
+                  !/[A-Z]/.test(values.password) ||
+                  !/\d/.test(values.password) ||
+                  !/[^A-Za-z0-9]/.test(values.password))
+              )
+                nextErrors.password =
+                  "Use 8 to 128 characters with uppercase, lowercase, a number, and a special character.";
+              if (
+                mode === "register" &&
+                values.confirmPassword !== values.password
+              )
+                nextErrors.confirmPassword = "Passwords do not match.";
+              if (mode === "login" && values.otp && !/^\d{6}$/.test(values.otp))
+                nextErrors.otp = "Authenticator code must contain exactly 6 digits.";
+
+              if (Object.keys(nextErrors).length) {
+                setErrors(nextErrors);
+                setAuthNotice("Please correct the highlighted details and try again.");
+                const firstField = Object.keys(nextErrors)[0];
+                const field = e.currentTarget.elements.namedItem(firstField);
+                if (field instanceof HTMLElement) field.focus();
+                toast.error("Please check your details", {
+                  description: nextErrors[firstField as keyof typeof nextErrors],
+                });
+                return;
+              }
+
               setBusy(true);
-              const data = new FormData(e.currentTarget);
+              setErrors({});
+              setAuthNotice("");
               try {
                 if (mode === "register")
                   await commerceApi("/api/v1/auth/register", {
                     method: "POST",
                     body: JSON.stringify({
-                      name: data.get("name"),
-                      email: data.get("email"),
-                      password: data.get("password"),
+                      name,
+                      email,
+                      password: values.password,
                     }),
                   });
                 const result = await commerceApi<{ accessToken: string; user: { role: string } }>(
@@ -834,18 +1420,28 @@ export function LoginPage() {
                   {
                     method: "POST",
                     body: JSON.stringify({
-                      email: data.get("email"),
-                      password: data.get("password"),
-                      otp: data.get("otp") || undefined,
+                      email,
+                      password: values.password,
+                      otp: values.otp || undefined,
                     }),
                   },
                 );
                 saveAccessToken(result.accessToken);
                 window.location.href = result.user.role === "CUSTOMER" ? "/account" : "/admin";
               } catch (error) {
-                toast.error(
-                  error instanceof Error ? error.message : "Sign in failed",
+                const notice = authErrorMessage(
+                  error,
+                  mode === "login"
+                    ? "Sign in failed. Please try again."
+                    : "Your account could not be created.",
                 );
+                setAuthNotice(notice.message);
+                if (notice.field)
+                  setErrors((current) => ({
+                    ...current,
+                    [notice.field!]: notice.message,
+                  }));
+                toast.error(notice.message);
               } finally {
                 setBusy(false);
               }
@@ -854,25 +1450,108 @@ export function LoginPage() {
             {mode === "register" && (
               <label>
                 Full name
-                <input name="name" required />
+                <input
+                  name="name"
+                  autoComplete="name"
+                  value={values.name}
+                  onChange={(event) => updateField("name", event.target.value)}
+                  aria-invalid={Boolean(errors.name)}
+                  aria-describedby={errors.name ? "name-error" : undefined}
+                  maxLength={100}
+                />
+                {errors.name && <small className="auth-field-error" id="name-error">{errors.name}</small>}
               </label>
             )}
             <label>
               Email address
-              <input name="email" type="email" required />
+              <input
+                name="email"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                value={values.email}
+                onChange={(event) => updateField("email", event.target.value)}
+                aria-invalid={Boolean(errors.email)}
+                aria-describedby={errors.email ? "email-error" : undefined}
+                maxLength={254}
+              />
+              {errors.email && <small className="auth-field-error" id="email-error">{errors.email}</small>}
             </label>
             <label>
               Password
-              <input name="password" type="password" minLength={8} required />
+              <input
+                name="password"
+                type="password"
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                value={values.password}
+                onChange={(event) => updateField("password", event.target.value)}
+                aria-invalid={Boolean(errors.password)}
+                aria-describedby={errors.password ? "password-error" : "password-hint"}
+                minLength={mode === "register" ? 8 : 1}
+                maxLength={128}
+              />
+              {errors.password ? (
+                <small className="auth-field-error" id="password-error">{errors.password}</small>
+              ) : (
+                <small className="auth-hint" id="password-hint">
+                  {mode === "register"
+                    ? "Use 8 to 128 characters with uppercase, lowercase, a number, and a special character."
+                    : "Enter the password for your account."}
+                </small>
+              )}
             </label>
-            {mode === "login" && <label>Authenticator code <small>(administrators)</small><input name="otp" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} /></label>}
+            {mode === "register" && (
+              <label>
+                Confirm password
+                <input
+                  name="confirmPassword"
+                  type="password"
+                  autoComplete="new-password"
+                  value={values.confirmPassword}
+                  onChange={(event) => updateField("confirmPassword", event.target.value)}
+                  aria-invalid={Boolean(errors.confirmPassword)}
+                  aria-describedby={errors.confirmPassword ? "confirm-password-error" : undefined}
+                  minLength={8}
+                  maxLength={128}
+                />
+                {errors.confirmPassword && <small className="auth-field-error" id="confirm-password-error">{errors.confirmPassword}</small>}
+              </label>
+            )}
+            {mode === "login" && (
+              <label>
+                Authenticator code <small>(staff accounts only)</small>
+                <input
+                  name="otp"
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                  pattern="[0-9]{6}"
+                  maxLength={6}
+                  value={values.otp}
+                  onChange={(event) =>
+                    updateField(
+                      "otp",
+                      event.target.value.replace(/\D/g, "").slice(0, 6),
+                    )
+                  }
+                  aria-invalid={Boolean(errors.otp)}
+                  aria-describedby={errors.otp ? "authenticator-error" : undefined}
+                />
+                {errors.otp && <small className="auth-field-error" id="authenticator-error">{errors.otp}</small>}
+              </label>
+            )}
             <button disabled={busy}>
-              {mode === "login" ? "Sign in" : "Create account"} <ArrowRight />
+              {busy
+                ? mode === "login"
+                  ? "Signing in…"
+                  : "Creating account…"
+                : mode === "login"
+                  ? "Sign in"
+                  : "Create account"} <ArrowRight />
             </button>
           </form>
           <button
             className="mode-switch"
-            onClick={() => setMode(mode === "login" ? "register" : "login")}
+            onClick={switchMode}
           >
             {mode === "login"
               ? "New here? Create an account"

@@ -1,15 +1,44 @@
 import { z } from "zod";
+
+const emailAddress = z
+  .string({ required_error: "Email address is required" })
+  .trim()
+  .min(1, "Email address is required")
+  .max(254, "Email address is too long")
+  .email("Enter a valid email address")
+  .transform((value) => value.toLowerCase());
+const loginPassword = z
+  .string({ required_error: "Password is required" })
+  .min(1, "Password is required")
+  .max(128, "Password must be 128 characters or fewer");
+const registrationPassword = loginPassword
+  .min(8, "Password must be at least 8 characters")
+  .regex(/[a-z]/, "Password must include a lowercase letter")
+  .regex(/[A-Z]/, "Password must include an uppercase letter")
+  .regex(/\d/, "Password must include a number")
+  .regex(/[^A-Za-z0-9\s]/, "Password must include a special character");
 export const credentials = z.object({
-  email: z.string().email().max(254),
-  password: z.string().min(8).max(128),
-  otp: z.string().regex(/^\d{6}$/).optional(),
+  email: emailAddress,
+  // Sign-in accepts any non-empty password so a bad password consistently
+  // returns INVALID_CREDENTIALS instead of exposing the registration policy.
+  password: loginPassword,
+  otp: z.string().regex(/^\d{6}$/, "Authenticator code must contain 6 digits").optional(),
 });
 export const registerSchema = credentials.extend({
-  name: z.string().trim().min(2).max(100),
+  name: z.string({ required_error: "Name is required" }).trim().min(2, "Name must be at least 2 characters").max(100, "Name must be 100 characters or fewer"),
+  password: registrationPassword,
 });
-export const mobileOtpRequestSchema=z.object({mobile:z.string().regex(/^\+[1-9]\d{7,14}$/)});
-export const mobileOtpVerifySchema=mobileOtpRequestSchema.extend({code:z.string().regex(/^\d{6}$/),name:z.string().trim().min(2).max(100).optional()});
-export const googleLoginSchema=z.object({credential:z.string().min(100).max(10000)});
+const mobileNumber = z.string({ required_error: "Mobile number is required" }).trim().regex(/^\+[1-9]\d{7,14}$/, "Enter a valid mobile number with country code, for example +919876543210");
+export const mobileOtpRequestSchema = z.object({ mobile: mobileNumber });
+export const mobileOtpVerifySchema = mobileOtpRequestSchema.extend({
+  code: z.string({ required_error: "Verification code is required" }).trim().regex(/^\d{6}$/, "Verification code must contain 6 digits"),
+  name: z.string().trim().min(2, "Name must be at least 2 characters").max(100, "Name must be 100 characters or fewer").optional(),
+});
+export const googleLoginSchema = z.object({credential:z.string().min(100).max(10000)});
+export const googleAccountLinkSchema = z.object({
+  currentPassword: loginPassword,
+  googleCredential: z.string().min(100).max(10000),
+}).strict();
 const variant = z
   .object({
     id: z.string().uuid().optional(),
@@ -117,6 +146,7 @@ export const integrationSchema = z.object({
     "WHATSAPP",
     "STORAGE",
     "ANALYTICS",
+    "AUTH",
   ]),
   provider: z.string().trim().min(2).max(80),
   enabled: z.boolean(),

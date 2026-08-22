@@ -10,6 +10,15 @@
 
 The development catalog and `admin@asterrow.local` account exist only outside production. Production never creates a default administrator. Provision the first administrator with a one-time, audited bootstrap command after database creation.
 
+## Google customer sign-in
+
+1. In Google Cloud Console, create an OAuth 2.0 client with application type **Web application**.
+2. Add `http://localhost:5173` as an authorized JavaScript origin for local development and add the exact HTTPS storefront origin for production. Do not add paths or trailing slashes.
+3. In the store admin, open **Integrations → Authentication → Google Sign-In**, paste the web client ID, enable the provider in the matching Test or Live workspace, and save.
+4. Google Identity Services uses the public web client ID and a signed ID token. Do not create, paste, or expose a Google client secret for this sign-in flow.
+
+`GOOGLE_CLIENT_ID` remains an optional deployment fallback for older environments. Admin-managed integration configuration should be preferred so the provider can be enabled or disabled without changing deployment secrets.
+
 ## Production release
 
 - Inject database, JWT, encryption and provider secrets from the hosting secret manager. Never commit `.env`.

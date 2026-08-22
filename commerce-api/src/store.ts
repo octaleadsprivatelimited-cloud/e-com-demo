@@ -7,6 +7,7 @@ export type StoredUser = {
   email: string;
   mobile?: string;
   passwordHash: string;
+  passwordEnabled?: boolean;
   role: string;
   permissions: string[];
   totpSecretEncrypted?: string;
@@ -230,8 +231,9 @@ export class CommerceStore {
         "An account already exists for this email",
       );
     const now = new Date().toISOString();
-    const user = {
+    const user: StoredUser = {
       ...input,
+      passwordEnabled: input.passwordEnabled ?? true,
       tags: input.tags || [],
       marketingConsent: input.marketingConsent || false,
       createdAt: input.createdAt || now,

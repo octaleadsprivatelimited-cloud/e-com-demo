@@ -31,32 +31,12 @@ function ProductCard({
   onAdd: (p: Product, variantId: string) => void;
 }) {
   const [liked, setLiked] = useState(false);
-  const [choice, setChoice] = useState(product.options?.[0]?.values[0]);
-  const firstOption = product.options?.[0]?.name;
-  const selectedChoice =
-    choice &&
-    product.variants?.some(
-      (variant) =>
-        variant.stock > 0 &&
-        (!firstOption || variant.options[firstOption] === choice),
-    )
-      ? choice
-      : product.options?.[0]?.values.find((value) =>
-          product.variants?.some(
-            (variant) =>
-              variant.stock > 0 &&
-              (!firstOption || variant.options[firstOption] === value),
-          ),
-        );
+  const requiresVariantSelection =
+    (product.variants?.length || 0) > 1 ||
+    (product.options || []).some((option) => option.values.length > 1);
   const chosenVariant =
-    product.variants?.find(
-      (variant) =>
-        variant.stock > 0 &&
-        (!firstOption ||
-          !selectedChoice ||
-          variant.options[firstOption] === selectedChoice),
-    ) || product.variants?.find((variant) => variant.stock > 0);
-  const needsOptionSelection = (product.options?.length || 0) > 1;
+    product.variants?.find((variant) => variant.stock > 0) ||
+    product.variants?.[0];
   return (
     <article className="product-card">
       <div className="product-art" style={{ background: product.tone }}>
@@ -73,7 +53,7 @@ function ProductCard({
         ) : (
           <span className="art-glyph">{product.glyph}</span>
         )}
-        {needsOptionSelection ? (
+        {requiresVariantSelection ? (
           <a className="quick" href={`/product/${product.id}`}>
             Choose options <ArrowRight />
           </a>
@@ -83,7 +63,7 @@ function ProductCard({
             disabled={!chosenVariant}
             onClick={() => chosenVariant && onAdd(product, chosenVariant.id)}
           >
-            Quick add {selectedChoice && `· ${selectedChoice}`} <Plus />
+            Quick add <Plus />
           </button>
         )}
       </div>
@@ -93,25 +73,6 @@ function ProductCard({
         <div className="rating">
           <Star /> {product.rating} <span>({product.reviews})</span>
         </div>
-        {product.options?.[0] && (
-          <div className="store-variants">
-            {product.options[0].values.map((v) => (
-              <button
-                className={selectedChoice === v ? "active" : ""}
-                onClick={() => setChoice(v)}
-                disabled={
-                  !product.variants?.some(
-                    (variant) =>
-                      variant.stock > 0 && variant.options[firstOption!] === v,
-                  )
-                }
-                key={v}
-              >
-                {v}
-              </button>
-            ))}
-          </div>
-        )}
         <div className="price">
           {money(chosenVariant?.price ?? product.price)}{" "}
           <s>{money(chosenVariant?.mrp ?? product.mrp)}</s>

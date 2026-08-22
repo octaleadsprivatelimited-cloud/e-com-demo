@@ -216,6 +216,7 @@ export class PrismaPersistence {
         email: user.email,
         mobile: user.mobile || undefined,
         passwordHash: user.passwordHash,
+        passwordEnabled: user.passwordEnabled,
         role: user.role,
         permissions,
         totpEnabled: user.totpEnabled,
@@ -349,6 +350,7 @@ export class PrismaPersistence {
           email: user.email,
           mobile: user.mobile,
           passwordHash: user.passwordHash,
+          passwordEnabled: user.passwordEnabled ?? true,
           role: user.role as UserRole,
         },
       });
@@ -365,6 +367,203 @@ export class PrismaPersistence {
       throw error;
     }
   }
+
+  async findAuthUserByIdentity(
+    provider: string,
+    subject: string,
+    email?: string,
+    audience?: string,
+  ) {
+    const identity = await this.db.authIdentity.findUnique({
+      where: { provider_subject: { provider, subject } },
+      select: { id: true, userId: true },
+    });
+    if (!identity) return null;
+    await this.db.authIdentity.update({
+      where: { id: identity.id },
+      data: {
+        lastAuthenticatedAt: new Date(),
+        ...(email ? { email } : {}),
+        ...(audience ? { audience } : {}),
+      },
+    });
+    return this.findAuthUser({ id: identity.userId });
+  }
+
+  async saveGoogleUser(
+    user: StoredUser,
+    subject: string,
+    email: string,
+    audience: string,
+  ) {
+    try {
+      await this.db.$transaction(async (tx) => {
+        await tx.user.create({
+          data: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            mobile: user.mobile,
+            passwordHash: user.passwordHash,
+            passwordEnabled: false,
+            role: user.role as UserRole,
+            verifiedAt: new Date(),
+          },
+        });
+        await tx.authIdentity.create({
+          data: {
+            userId: user.id,
+            provider: "google",
+            subject,
+            audience,
+            email,
+            lastAuthenticatedAt: new Date(),
+          },
+        });
+      });
+      return user;
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        const racedIdentity = await this.findAuthUserByIdentity(
+          "google",
+          subject,
+          email,
+          audience,
+        );
+        if (racedIdentity) return racedIdentity;
+        throw new AppError(
+          409,
+          "GOOGLE_ACCOUNT_LINK_REQUIRED",
+          "An account already exists with this email. Sign in with your existing method before connecting Google.",
+        );
+      }
+      throw error;
+    }
+  }
+
+  async userHasAuthIdentity(
+    userId: string,
+    provider: string,
+    subject: string,
+  ) {
+    const identity = await this.db.authIdentity.findUnique({
+      where: { provider_subject: { provider, subject } },
+      select: { userId: true },
+    });
+    return identity?.userId === userId;
+  }
+
+  async getUserAuthIdentity(userId: string, provider: string) {
+    return this.db.authIdentity.findUnique({
+      where: { userId_provider: { userId, provider } },
+      select: {
+        userId: true,
+        provider: true,
+        subject: true,
+        audience: true,
+        email: true,
+      },
+    });
+  }
+
+  async linkAuthIdentity(input: {
+    userId: string;
+    provider: string;
+    subject: string;
+    audience: string;
+    email: string;
+  }) {
+    const touch = (id: string) =>
+      this.db.authIdentity.update({
+        where: { id },
+        data: {
+          audience: input.audience,
+          email: input.email,
+          lastAuthenticatedAt: new Date(),
+        },
+        select: {
+          userId: true,
+          provider: true,
+          subject: true,
+          audience: true,
+          email: true,
+        },
+      });
+    const resolveExisting = async () => {
+      const bySubject = await this.db.authIdentity.findUnique({
+        where: {
+          provider_subject: {
+            provider: input.provider,
+            subject: input.subject,
+          },
+        },
+        select: { id: true, userId: true },
+      });
+      if (bySubject) {
+        if (bySubject.userId !== input.userId)
+          throw new AppError(
+            409,
+            "GOOGLE_IDENTITY_IN_USE",
+            "This Google account is already connected to another customer",
+          );
+        return touch(bySubject.id);
+      }
+      const byUser = await this.db.authIdentity.findUnique({
+        where: {
+          userId_provider: {
+            userId: input.userId,
+            provider: input.provider,
+          },
+        },
+        select: { id: true, subject: true },
+      });
+      if (byUser) {
+        if (byUser.subject !== input.subject)
+          throw new AppError(
+            409,
+            "GOOGLE_ACCOUNT_ALREADY_LINKED",
+            "A different Google account is already connected to this customer",
+          );
+        return touch(byUser.id);
+      }
+      return null;
+    };
+
+    const existing = await resolveExisting();
+    if (existing) return existing;
+    try {
+      return await this.db.authIdentity.create({
+        data: {
+          userId: input.userId,
+          provider: input.provider,
+          subject: input.subject,
+          audience: input.audience,
+          email: input.email,
+          lastAuthenticatedAt: new Date(),
+        },
+        select: {
+          userId: true,
+          provider: true,
+          subject: true,
+          audience: true,
+          email: true,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        const raced = await resolveExisting();
+        if (raced) return raced;
+      }
+      throw error;
+    }
+  }
+
   async deleteCustomerAccount(userId: string) {
     return this.db.$transaction(async (tx) => {
       const user = await tx.user.findUnique({
@@ -451,6 +650,61 @@ export class PrismaPersistence {
     return this.db.notification.create({
       data: { ...input, status: "QUEUED" },
     });
+  }
+
+  async reserveMobileOtpChallenge(input: { mobile: string; codeHash: string; expiresAt: number; resendAt: number; now: number }): Promise<{ created: true } | { created: false; retryAfterSeconds: number }> {
+    return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.mobile})::bigint)`;
+      const existing = await tx.$queryRaw<Array<{ resendAt: Date }>>`SELECT "resendAt" FROM "MobileOtpChallenge" WHERE "mobile" = ${input.mobile} FOR UPDATE`;
+      const resendAt = existing[0]?.resendAt.getTime();
+      if (resendAt && resendAt > input.now)
+        return { created: false as const, retryAfterSeconds: Math.max(1, Math.ceil((resendAt - input.now) / 1000)) };
+      await tx.$executeRaw`
+        INSERT INTO "MobileOtpChallenge"
+          ("mobile", "codeHash", "attempts", "expiresAt", "resendAt", "createdAt", "updatedAt")
+        VALUES
+          (${input.mobile}, ${input.codeHash}, 0, ${new Date(input.expiresAt)}, ${new Date(input.resendAt)}, ${new Date(input.now)}, ${new Date(input.now)})
+        ON CONFLICT ("mobile") DO UPDATE SET
+          "codeHash" = EXCLUDED."codeHash", "attempts" = 0,
+          "expiresAt" = EXCLUDED."expiresAt", "resendAt" = EXCLUDED."resendAt",
+          "updatedAt" = EXCLUDED."updatedAt"
+      `;
+      return { created: true as const };
+    });
+  }
+
+  async consumeMobileOtpChallenge(input: { mobile: string; submittedHash: string; now: number; maxAttempts: number }): Promise<
+    | { outcome: "VERIFIED" | "NOT_FOUND" | "EXPIRED" }
+    | { outcome: "INVALID" | "ATTEMPTS_EXCEEDED"; attemptsRemaining: number; resendAt: number }
+  > {
+    return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.mobile})::bigint)`;
+      const rows = await tx.$queryRaw<Array<{ codeHash: string; attempts: number; expiresAt: Date; resendAt: Date }>>`SELECT "codeHash", "attempts", "expiresAt", "resendAt" FROM "MobileOtpChallenge" WHERE "mobile" = ${input.mobile} FOR UPDATE`;
+      const challenge = rows[0];
+      if (!challenge) return { outcome: "NOT_FOUND" as const };
+      if (challenge.expiresAt.getTime() <= input.now) {
+        await tx.$executeRaw`DELETE FROM "MobileOtpChallenge" WHERE "mobile" = ${input.mobile}`;
+        return { outcome: "EXPIRED" as const };
+      }
+      const attemptsRemaining = Math.max(0, input.maxAttempts - challenge.attempts);
+      if (attemptsRemaining === 0)
+        return { outcome: "ATTEMPTS_EXCEEDED" as const, attemptsRemaining: 0, resendAt: challenge.resendAt.getTime() };
+      const expected = Buffer.from(challenge.codeHash), submitted = Buffer.from(input.submittedHash);
+      const matches = expected.length === submitted.length && crypto.timingSafeEqual(expected, submitted);
+      if (!matches) {
+        const nextAttempts = challenge.attempts + 1, remaining = Math.max(0, input.maxAttempts - nextAttempts);
+        await tx.$executeRaw`UPDATE "MobileOtpChallenge" SET "attempts" = ${nextAttempts}, "updatedAt" = ${new Date(input.now)} WHERE "mobile" = ${input.mobile}`;
+        return { outcome: remaining === 0 ? "ATTEMPTS_EXCEEDED" as const : "INVALID" as const, attemptsRemaining: remaining, resendAt: challenge.resendAt.getTime() };
+      }
+      await tx.$executeRaw`DELETE FROM "MobileOtpChallenge" WHERE "mobile" = ${input.mobile}`;
+      return { outcome: "VERIFIED" as const };
+    });
+  }
+
+  async deleteMobileOtpChallenge(mobile: string, codeHash?: string) {
+    if (codeHash)
+      return this.db.$executeRaw`DELETE FROM "MobileOtpChallenge" WHERE "mobile" = ${mobile} AND "codeHash" = ${codeHash}`;
+    return this.db.$executeRaw`DELETE FROM "MobileOtpChallenge" WHERE "mobile" = ${mobile}`;
   }
 
   async saveSession(jti: string, userId: string, expiresAt: number) {
@@ -691,6 +945,7 @@ export class PrismaPersistence {
         email: true,
         mobile: true,
         passwordHash: true,
+        passwordEnabled: true,
         role: true,
         disabledAt: true,
         authVersion: true,
@@ -715,12 +970,14 @@ export class PrismaPersistence {
         };
   }
 
-  async findAuthUser(input: { email?: string; mobile?: string }) {
-    if (!input.email && !input.mobile) return null;
+  async findAuthUser(input: { id?: string; email?: string; mobile?: string }) {
+    if (!input.id && !input.email && !input.mobile) return null;
     const user = await this.db.user.findFirst({
-      where: input.email
-        ? { email: { equals: input.email, mode: "insensitive" } }
-        : { mobile: input.mobile },
+      where: input.id
+        ? { id: input.id }
+        : input.email
+          ? { email: { equals: input.email, mode: "insensitive" } }
+          : { mobile: input.mobile },
       include: {
         roleAssignments: {
           include: {
@@ -745,6 +1002,7 @@ export class PrismaPersistence {
       email: user.email,
       mobile: user.mobile || undefined,
       passwordHash: user.passwordHash,
+      passwordEnabled: user.passwordEnabled,
       role: user.role,
       permissions,
       totpEnabled: user.totpEnabled,

@@ -24,9 +24,13 @@ export function ProductDetailPage() {
     [selected, setSelected] = useState<Record<string, string>>({});
   const cart = useCommerceCart();
   useEffect(() => {
-    const initial =
-      product?.variants?.find((variant) => variant.stock > 0) ||
-      product?.variants?.[0];
+    const variants = product?.variants || [];
+    const requiresChoice =
+      variants.length > 1 ||
+      (product?.options || []).some((option) => option.values.length > 1);
+    const initial = requiresChoice
+      ? undefined
+      : variants.find((variant) => variant.stock > 0) || variants[0];
     setSelected(initial?.options || {});
     setQty(1);
   }, [product?.id]);
@@ -46,33 +50,43 @@ export function ProductDetailPage() {
         ([name, value]) => variant.options[name] === value,
       ),
   );
+  const requiresVariantSelection =
+    (product.variants?.length || 0) > 1 ||
+    (product.options || []).some((option) => option.values.length > 1);
+  const selectableOptions = requiresVariantSelection
+    ? product.options || []
+    : [];
   const price = selectedVariant?.price ?? product.price;
   const mrp = selectedVariant?.mrp ?? product.mrp;
+  const missingOptions = selectableOptions
+    .map((option) => option.name)
+    .filter((name) => !selected[name]);
+  const selectionPending = requiresVariantSelection && !selectedVariant;
+  const selectionPrompt = missingOptions.length
+    ? `Select ${missingOptions.join(" and ")}`
+    : "Select a variant";
   const chooseOption = (name: string, value: string) => {
-    const matching =
-      product.variants?.find(
-        (variant) =>
-          variant.stock > 0 &&
-          variant.options[name] === value &&
-          Object.entries(selected).every(
-            ([selectedName, selectedValue]) =>
-              selectedName === name ||
-              variant.options[selectedName] === selectedValue,
-          ),
-      ) ||
-      product.variants?.find(
-        (variant) => variant.stock > 0 && variant.options[name] === value,
-      );
-    setSelected(matching?.options || { ...selected, [name]: value });
+    setSelected((current) => ({ ...current, [name]: value }));
     setQty(1);
   };
+  const optionAvailable = (name: string, value: string) =>
+    product.variants?.some(
+      (variant) =>
+        variant.stock > 0 &&
+        variant.options[name] === value &&
+        Object.entries(selected).every(
+          ([selectedName, selectedValue]) =>
+            selectedName === name ||
+            variant.options[selectedName] === selectedValue,
+        ),
+    );
   const add = () => {
     if (
       !selectedVariant ||
       selectedVariant.stock < 1 ||
       !cart.add(product.id, selectedVariant.id, qty)
     ) {
-      toast.error("Choose an available product option");
+      toast.error(selectionPrompt);
       return false;
     }
     toast.success("Added to your bag");
@@ -134,7 +148,7 @@ export function ProductDetailPage() {
               A considered everyday piece selected for its material honesty,
               useful form and lasting quality.
             </p>
-            {product.options?.map((opt) => (
+            {selectableOptions.map((opt) => (
               <div className="option-picker" key={opt.name}>
                 <div>
                   <b>Select {opt.name}</b>
@@ -145,12 +159,8 @@ export function ProductDetailPage() {
                     <button
                       onClick={() => chooseOption(opt.name, v)}
                       className={selected[opt.name] === v ? "active" : ""}
-                      disabled={
-                        !product.variants?.some(
-                          (variant) =>
-                            variant.stock > 0 && variant.options[opt.name] === v,
-                        )
-                      }
+                      aria-pressed={selected[opt.name] === v}
+                      disabled={!optionAvailable(opt.name, v)}
                       key={v}
                     >
                       {v}
@@ -181,7 +191,8 @@ export function ProductDetailPage() {
                 onClick={add}
                 disabled={!selectedVariant || selectedVariant.stock < 1}
               >
-                <ShoppingBag /> Add to bag
+                <ShoppingBag />
+                {selectionPending ? selectionPrompt : "Add to bag"}
               </button>
               <button className="save">
                 <Heart />
@@ -190,11 +201,12 @@ export function ProductDetailPage() {
             <a
               className="buy-now"
               href="/checkout"
+              aria-disabled={!selectedVariant || selectedVariant.stock < 1}
               onClick={(event) => {
                 if (!add()) event.preventDefault();
               }}
             >
-              Buy it now
+              {selectionPending ? `${selectionPrompt} to buy` : "Buy it now"}
             </a>
             <div className="delivery-box">
               <div>

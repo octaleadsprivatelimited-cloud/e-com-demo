@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import sharp from "sharp";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -311,15 +311,21 @@ describe("commerce API", () => {
   it("converts uploaded product images to optimized WebP and rejects invalid files", async () => {
     const product = store.listProducts()[0]!,
       image = await sharp({
-        create: { width: 120, height: 80, channels: 3, background: "#b96849" },
+        create: {
+          width: 2400,
+          height: 1800,
+          channels: 3,
+          background: "#b96849",
+        },
       })
-        .png()
+        .jpeg({ quality: 95 })
+        .withMetadata({ orientation: 1, density: 300 })
         .toBuffer(),
       form = new FormData();
     form.append(
       "image",
-      new Blob([image], { type: "image/png" }),
-      "product.png",
+      new Blob([image], { type: "image/jpeg" }),
+      "product.jpg",
     );
     form.append("alt", "Product view");
     const response = await fetch(
@@ -334,7 +340,32 @@ describe("commerce API", () => {
     expect(response.status).toBe(201);
     expect(body.data.media.url).toMatch(/\.webp$/);
     expect(body.data.format).toBe("webp");
+    expect(body.data.width).toBe(1600);
+    expect(body.data.height).toBe(1200);
+    expect(body.data.thumbnail).toMatchObject({ width: 480, height: 480 });
     expect(body.data.bytes).toBeLessThan(image.length);
+    const mainPath = path.join(
+        uploadDirectory,
+        path.basename(new URL(body.data.url).pathname),
+      ),
+      thumbnailPath = path.join(
+        uploadDirectory,
+        path.basename(new URL(body.data.thumbnailUrl).pathname),
+      ),
+      outputMetadata = await sharp(await readFile(mainPath)).metadata();
+    expect(outputMetadata.format).toBe("webp");
+    expect(outputMetadata.exif).toBeUndefined();
+    expect(outputMetadata.icc).toBeUndefined();
+    await expect(stat(thumbnailPath)).resolves.toBeDefined();
+
+    const removed = await request(
+      `/api/v1/admin/products/${product.id}/media/${body.data.media.id}`,
+      { method: "DELETE", headers: { authorization: `Bearer ${adminToken}` } },
+    );
+    expect(removed.status).toBe(200);
+    await expect(stat(mainPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(thumbnailPath)).rejects.toMatchObject({ code: "ENOENT" });
+
     const bad = new FormData();
     bad.append(
       "image",
@@ -350,6 +381,25 @@ describe("commerce API", () => {
       },
     );
     expect(rejected.status).toBe(415);
+
+    const spoofed = new FormData();
+    spoofed.append(
+      "image",
+      new Blob(["not-an-image"], { type: "image/png" }),
+      "spoofed.png",
+    );
+    const invalidContent = await fetch(
+      `${base}/api/v1/admin/products/${product.id}/media/upload`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${adminToken}` },
+        body: spoofed,
+      },
+    );
+    expect(invalidContent.status).toBe(415);
+    await expect(invalidContent.json()).resolves.toMatchObject({
+      error: { code: "IMAGE_CONTENT_INVALID" },
+    });
   });
   it("manages paginated products with stable variants and non-destructive retirement", async () => {
     const smallId = crypto.randomUUID(),
